@@ -26,7 +26,7 @@
    "manifest_version": 3,
    "name": "Open Scraper",
    "options_page": "src/options/options.html",
-   "permissions": [ "tabs", "scripting", "storage", "webRequest" ],
+   "permissions": [ "tabs", "storage", "webRequest" ],
    "update_url": "https://clients2.google.com/service/update2/crx",
    "version": "1.4.1",
    "web_accessible_resources": [ {
