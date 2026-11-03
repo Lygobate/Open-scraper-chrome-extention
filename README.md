@@ -4,6 +4,8 @@
 
 A free, secure, and improved fork of the popular **"Instant Data Scraper"** extension.
 
+**📦 Available on the Chrome Web Store:** [Install Open-Scraper](https://chromewebstore.google.com/detail/open-scraper/bbolpnicmijleigcpabhabogobmbnkmd)
+
 ## ⚠️ Context: Why this project?
 
 Attention all OSINT investigators and enthusiasts.
@@ -32,7 +34,13 @@ Faced with this security risk, **Open-Scraper** was created starting from the ba
 
 ## ⚙️ Setup: How to install the extension
 
-To use this secure version, you must manually install ("sideload") it onto your browser:
+### Option 1 (recommended): Chrome Web Store
+
+Open the [Open-Scraper page on the Chrome Web Store](https://chromewebstore.google.com/detail/open-scraper/bbolpnicmijleigcpabhabogobmbnkmd) and click **"Add to Chrome"**. Updates are automatic. It also works on Chromium-based browsers (Brave, Edge...).
+
+### Option 2: Manual install from source
+
+For those who want to audit the code or run the latest development version:
 
 1. **Get the code**:
    - Clone this repository to your machine: `git clone https://github.com/Lygobate/Open-scraper.git`
@@ -42,4 +50,4 @@ To use this secure version, you must manually install ("sideload") it onto your 
 4. Click on the **"Load unpacked"** button (top left).
 5. Select the extracted folder that contains the `manifest.json` file.
 
-The Open-Scraper extension will appear in your list and will be immediately functional and secure to use!
+Whichever option you choose, the Open-Scraper extension will appear in your list and will be immediately functional and secure to use!
