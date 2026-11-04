@@ -50,4 +50,8 @@ For those who want to audit the code or run the latest development version:
 4. Click on the **"Load unpacked"** button (top left).
 5. Select the extracted folder that contains the `manifest.json` file.
 
+### Firefox (coming soon)
+
+A Firefox version is being prepared. To build the package yourself (Node.js required), run `node scripts/build-firefox.mjs`: the zip is generated in `dist/`.
+
 Whichever option you choose, the Open-Scraper extension will appear in your list and will be immediately functional and secure to use!
