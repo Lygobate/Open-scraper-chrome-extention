@@ -511,8 +511,10 @@
      * The input table is not modified.
      * @param {{fields: string[], data: Array<Array<*>>}} table - Headers and rows to export.
      * @param {string} fileName - Name of the downloaded file.
+     * @param {{bom: boolean}} [options] - With bom, the file starts with a UTF-8 byte order mark
+     *     and ends with a line break, so that spreadsheet apps read accented text correctly.
      */
-    function exportCsv(table, fileName) {
+    function exportCsv(table, fileName, options) {
         const csvOptions = { quotes: true, escapeChar: '"' };
         const flattened = {
             fields: table.fields.slice(),
@@ -520,8 +522,10 @@
                 Array.isArray(cell) ? Papa.unparse([cell], csvOptions) : cell
             )))
         };
+        const text = Papa.unparse(flattened, csvOptions);
+        const withBom = !!(options && options.bom);
         saveAs(
-            new Blob([Papa.unparse(flattened, csvOptions)], { type: "application/octet-stream" }),
+            new Blob([withBom ? "\uFEFF" + text + "\r\n" : text], { type: "application/octet-stream" }),
             fileName
         );
     }

@@ -919,8 +919,14 @@
     function getExportFileBase() {
         let site = "page";
         try {
-            const parts = new URL(state.sampleUrls[0] || $id("detailsSampleUrl").value).hostname.split(".");
-            site = parts[0].indexOf("www") > -1 && parts[1] ? parts[1] : parts[0];
+            const hostname = new URL(state.sampleUrls[0] || $id("detailsSampleUrl").value).hostname;
+            const parts = hostname.split(".");
+            if (/^[\d.]+$/.test(hostname) || hostname.indexOf(":") > -1) {
+                // IP address: keep all of it
+                site = hostname.replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "") || "page";
+            } else {
+                site = parts[0].indexOf("www") > -1 && parts[1] ? parts[1] : parts[0];
+            }
         } catch (error) {
             site = "page";
         }
@@ -936,7 +942,7 @@
         if (!helpers || !state.results.length) return;
         const table = buildResultsTable();
         if (format === "csv") {
-            helpers.exportCsv(table, getExportFileBase() + ".csv");
+            helpers.exportCsv(table, getExportFileBase() + ".csv", { bom: true });
         } else if (format === "xlsx") {
             helpers.exportXlsx(table, getExportFileBase() + ".xlsx", "Page details");
         } else {
