@@ -19,6 +19,12 @@
 
     const KIND_LABELS = { text: "Text", link: "Link", image: "Image" };
 
+    // Rows drawn in the results grid (exports always contain every row)
+    const PREVIEW_LIMIT = 1000;
+
+    // chrome.storage.local key of the saved field sets, by hostname
+    const FIELD_SETS_KEY = "pageDetailsFieldSets";
+
     // Target tab, as given by background.js in the window URL
     const targetTabId = parseInt(new URLSearchParams(window.location.search).get("tabid"), 10);
 
@@ -38,7 +44,8 @@
         nextIndex: 0,
         running: false,
         runToken: 0,
-        resolveStop: null
+        resolveStop: null,
+        grid: null
     };
 
     const $id = id => document.getElementById(id);
@@ -100,6 +107,7 @@
      */
     function onDetailsShown() {
         if (state.source === "list" && !state.running) loadListSource();
+        renderResultsGrid();
     }
 
     // --- URL sources ---
@@ -315,7 +323,7 @@
         }
         const usable = state.sampleUrls.length;
         $id("detailsUrlCount").textContent = usable + (usable === 1 ? " URL" : " URLs") +
-            (urls.length !== usable ? " (" + (urls.length - usable) + " other values)" : "");
+            (urls.length !== usable ? " (" + (urls.length - usable) + (urls.length - usable === 1 ? " other value)" : " other values)") : "");
         updateSampleUi();
         updateRunUi();
     }
@@ -357,6 +365,7 @@
             const tab = await getTargetTab();
             $id("detailsSampleUrl").value = tab ? tab.url : "";
         }
+        refreshSavedBar();
     }
 
     /**
@@ -517,7 +526,7 @@
 
             const sample = document.createElement("span");
             sample.className = "osd-field-sample";
-            sample.textContent = field.sample;
+            sample.textContent = field.sample || "(saved field)";
             sample.title = field.sample + "\n\n" + field.selectors.join("\n");
 
             const remove = document.createElement("button");
@@ -541,6 +550,7 @@
      */
     function onFieldsChanged(nameOnly) {
         if (!nameOnly) updateRunUi();
+        $id("detailsSaveFields").disabled = isBusy() || !state.fields.length;
         onResultsChanged();
     }
 
@@ -803,6 +813,9 @@
         $id("detailsPickStart").disabled = busy;
         $id("detailsPickStop").hidden = !state.picking;
         document.querySelectorAll("#detailsFieldList input, #detailsFieldList button").forEach(el => { el.disabled = busy; });
+        $id("detailsSaveFields").disabled = busy || !state.fields.length;
+        $id("detailsUseSaved").disabled = busy;
+        $id("detailsDeleteSaved").disabled = busy;
         updateSampleUi();
         updateRunUi();
     }
@@ -810,10 +823,200 @@
     // --- Results ---
 
     /**
+     * Builds the results table: the URL first, then one column per field, in field order.
+     * Fields added after some pages were visited are empty for those pages.
+     * @returns {{fields: string[], data: string[][]}} Table ready for the grid and the exports.
+     */
+    function buildResultsTable() {
+        return {
+            fields: [state.urlColumnName || "URL"].concat(state.fields.map(field => field.name)),
+            data: state.results.map(result => [result.url].concat(
+                state.fields.map(field => (field.id in result.values ? result.values[field.id] : ""))
+            ))
+        };
+    }
+
+    /**
      * Reacts to new results or to a change of the fields shown.
      */
     function onResultsChanged() {
         updateRunUi();
+        const count = state.results.length;
+        $id("detailsResultCount").textContent = count ? count + (count === 1 ? " row" : " rows") : "";
+        ["detailsCsv", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
+        if (!count) showMessage("detailsExportMessage", "");
+        renderResultsGrid();
+    }
+
+    /**
+     * Draws the read-only results grid (only while the panel is shown, so that it gets a real size).
+     */
+    function renderResultsGrid() {
+        const container = $id("detailsHot");
+        const hasRows = state.results.length > 0;
+        $id("detailsNoResults").hidden = hasRows;
+        container.hidden = !hasRows;
+
+        if (state.grid && (!hasRows || document.body.classList.contains(DETAILS_MODE_CLASS))) {
+            state.grid.destroy();
+            state.grid = null;
+            container.innerHTML = "";
+        }
+        if (!hasRows || !document.body.classList.contains(DETAILS_MODE_CLASS)) return;
+
+        const table = buildResultsTable();
+        const rows = table.data.slice(0, PREVIEW_LIMIT);
+        const panelHeight = $id("detailsPanel").clientHeight;
+        state.grid = new Handsontable(container, {
+            data: rows,
+            colHeaders: table.fields,
+            rowHeaders: true,
+            readOnly: true,
+            wordWrap: false,
+            manualColumnResize: true,
+            width: container.clientWidth,
+            height: Math.min(Math.max(180, panelHeight - 90), 34 + 25 * rows.length),
+            modifyColWidth: function(width) {
+                if (width > 240) return 240;
+            }
+        });
+    }
+
+    /**
+     * Returns the export file name without extension: "<site>-details-<date>".
+     * @returns {string} File name base.
+     */
+    function getExportFileBase() {
+        let site = "page";
+        try {
+            const parts = new URL(state.sampleUrls[0] || $id("detailsSampleUrl").value).hostname.split(".");
+            site = parts[0].indexOf("www") > -1 && parts[1] ? parts[1] : parts[0];
+        } catch (error) {
+            site = "page";
+        }
+        return site + "-details-" + new Date().toISOString().slice(0, 10);
+    }
+
+    /**
+     * Runs one of the shared export helpers of popup.js on the results.
+     * @param {"csv"|"xlsx"|"copy"} format - Export format.
+     */
+    function exportResults(format) {
+        const helpers = window.OpenScraper;
+        if (!helpers || !state.results.length) return;
+        const table = buildResultsTable();
+        if (format === "csv") {
+            helpers.exportCsv(table, getExportFileBase() + ".csv");
+        } else if (format === "xlsx") {
+            helpers.exportXlsx(table, getExportFileBase() + ".xlsx", "Page details");
+        } else {
+            helpers.copyTsv(table);
+            showMessage("detailsExportMessage", "Copied " + table.data.length + (table.data.length === 1 ? " row" : " rows") + " to the clipboard.");
+        }
+    }
+
+    // --- Saved field sets ---
+
+    /**
+     * Returns the hostname (without www.) of the sample page.
+     * @returns {string} Hostname, or "".
+     */
+    function getSampleHost() {
+        try {
+            return new URL($id("detailsSampleUrl").value).hostname.replace(/^www\./, "");
+        } catch (error) {
+            return "";
+        }
+    }
+
+    /**
+     * Reads the saved field sets.
+     * @returns {Promise<Object>} Field sets by hostname.
+     */
+    async function readFieldSets() {
+        try {
+            const stored = await chromeInstance.storage.local.get(FIELD_SETS_KEY);
+            const sets = stored && stored[FIELD_SETS_KEY];
+            return sets && typeof sets === "object" ? sets : {};
+        } catch (error) {
+            return {};
+        }
+    }
+
+    /**
+     * Returns the valid fields of a saved set.
+     * @param {Object} set - Saved set.
+     * @returns {Array<{name: string, kind: string, selectors: string[]}>} Fields.
+     */
+    function getSavedFields(set) {
+        if (!set || !Array.isArray(set.fields)) return [];
+        return set.fields.filter(field => field && KIND_LABELS[field.kind] &&
+            Array.isArray(field.selectors) && field.selectors.length &&
+            field.selectors.every(selector => typeof selector === "string"));
+    }
+
+    /**
+     * Shows the saved field set of the sample page's site, if any, with Use and Delete.
+     */
+    async function refreshSavedBar() {
+        const host = getSampleHost();
+        const fields = host ? getSavedFields((await readFieldSets())[host]) : [];
+        $id("detailsSavedBar").hidden = !fields.length;
+        if (fields.length) {
+            $id("detailsSavedText").textContent = "Saved fields for " + host + ": " +
+                fields.map(field => field.name).join(", ");
+            $id("detailsSavedText").title = $id("detailsSavedText").textContent;
+        }
+    }
+
+    /**
+     * Saves the current fields for the sample page's site (replaces the previous set).
+     */
+    async function saveFieldSet() {
+        const host = getSampleHost();
+        if (!host || !state.fields.length) return;
+        const sets = await readFieldSets();
+        sets[host] = {
+            fields: state.fields.map(field => ({ name: field.name, kind: field.kind, selectors: field.selectors.slice() })),
+            savedAt: new Date().toISOString()
+        };
+        try {
+            await chromeInstance.storage.local.set({ [FIELD_SETS_KEY]: sets });
+            showMessage("detailsPickMessage", "Fields saved for " + host + ".");
+        } catch (error) {
+            showMessage("detailsPickMessage", "Unable to save the fields: " + (error && error.message || error), "error");
+        }
+        refreshSavedBar();
+    }
+
+    /**
+     * Replaces the current fields with the saved set of the sample page's site.
+     */
+    async function useSavedFieldSet() {
+        if (isBusy()) return;
+        const host = getSampleHost();
+        const fields = getSavedFields((await readFieldSets())[host]);
+        if (!fields.length) return;
+        state.fields = [];
+        resetResults();
+        addFields(fields.map(field => ({ name: field.name, kind: field.kind, selectors: field.selectors, sample: "" })));
+        showMessage("detailsPickMessage", "Saved fields of " + host + " loaded.");
+    }
+
+    /**
+     * Deletes the saved field set of the sample page's site.
+     */
+    async function deleteSavedFieldSet() {
+        const host = getSampleHost();
+        const sets = await readFieldSets();
+        if (!host || !(host in sets)) return;
+        delete sets[host];
+        try {
+            await chromeInstance.storage.local.set({ [FIELD_SETS_KEY]: sets });
+        } catch (error) {
+            console.error("Unable to delete the saved fields:", error);
+        }
+        refreshSavedBar();
     }
 
     // --- Wiring ---
@@ -838,6 +1041,26 @@
     $id("detailsStart").addEventListener("click", startRun);
     $id("detailsStop").addEventListener("click", stopRun);
 
+    $id("detailsSaveFields").addEventListener("click", saveFieldSet);
+    $id("detailsUseSaved").addEventListener("click", useSavedFieldSet);
+    $id("detailsDeleteSaved").addEventListener("click", deleteSavedFieldSet);
+    chromeInstance.storage.onChanged.addListener((changes, area) => {
+        if (area === "local" && changes[FIELD_SETS_KEY]) refreshSavedBar();
+    });
+
+    $id("detailsCsv").addEventListener("click", () => exportResults("csv"));
+    $id("detailsXlsx").addEventListener("click", () => exportResults("xlsx"));
+    $id("detailsCopy").addEventListener("click", () => exportResults("copy"));
+
+    // When no URL list is set, the sample page follows the target tab
+    chromeInstance.tabs.onUpdated.addListener((tabId, changeInfo) => {
+        if (tabId === targetTabId && changeInfo.url && !state.sampleUrls.length) updateSampleUi();
+    });
+
+    window.addEventListener("resize", () => {
+        if (document.body.classList.contains(DETAILS_MODE_CLASS)) renderResultsGrid();
+    });
+
     // The window holds the results in memory only: confirm before closing it during a run
     window.addEventListener("beforeunload", event => {
         if (state.running) {
@@ -848,5 +1071,6 @@
 
     renderFieldList();
     updateBusyUi();
+    onResultsChanged();
     setSource("list");
 })();

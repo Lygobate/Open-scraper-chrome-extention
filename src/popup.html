@@ -134,6 +134,13 @@
             <div class="osd-row">
                 <button type="button" class="osd-btn osd-btn-primary" id="detailsPickStart">Pick fields in the page</button>
                 <button type="button" class="osd-btn osd-btn-primary" id="detailsPickStop" hidden>Finish picking</button>
+                <span class="osd-grow"></span>
+                <button type="button" class="osd-btn" id="detailsSaveFields">Save fields for this site</button>
+            </div>
+            <div class="osd-saved" id="detailsSavedBar" hidden>
+                <span class="osd-saved-text" id="detailsSavedText"></span>
+                <button type="button" class="osd-btn osd-btn-primary" id="detailsUseSaved">Use</button>
+                <button type="button" class="osd-btn" id="detailsDeleteSaved">Delete</button>
             </div>
             <div class="osd-message" id="detailsPickMessage" role="status" hidden></div>
             <ul class="osd-field-list" id="detailsFieldList" aria-label="Fields"></ul>
@@ -157,6 +164,20 @@
                 <div class="osd-progress-url" id="detailsProgressUrl"></div>
             </div>
             <div class="osd-message osd-message-warning" id="detailsRunMessage" role="status" hidden></div>
+        </section>
+
+        <section class="osd-step" aria-labelledby="detailsResultsTitle">
+            <div class="osd-row osd-results-head">
+                <h2 class="osd-step-title" id="detailsResultsTitle"><span class="osd-step-num">4</span> Results</h2>
+                <span class="osd-count" id="detailsResultCount"></span>
+                <span class="osd-grow"></span>
+                <button type="button" class="osd-btn osd-btn-success" id="detailsCsv"><span class="glyphicon glyphicon-download-alt"></span> CSV</button>
+                <button type="button" class="osd-btn osd-btn-success" id="detailsXlsx"><span class="glyphicon glyphicon-download-alt"></span> XLSX</button>
+                <button type="button" class="osd-btn osd-btn-success" id="detailsCopy"><span class="glyphicon glyphicon-copy"></span> Copy</button>
+            </div>
+            <div class="osd-message" id="detailsExportMessage" role="status" hidden></div>
+            <p class="osd-hint" id="detailsNoResults">One row per visited page appears here, with the page URL first. Results stay in this window only.</p>
+            <div id="detailsHot" class="osd-hot" hidden></div>
         </section>
     </div>
 
