@@ -3,7 +3,17 @@
       "default_icon": "icon64.png"
    },
    "background": {
+      "scripts": [ "src/background.js" ],
       "service_worker": "src/background.js"
+   },
+   "browser_specific_settings": {
+      "gecko": {
+         "data_collection_permissions": {
+            "required": [ "none" ]
+         },
+         "id": "open-scraper@lygobate",
+         "strict_min_version": "140.0"
+      }
    },
    "content_scripts": [ {
       "css": [ "src/onload.css" ],
@@ -28,7 +38,7 @@
    "options_page": "src/options/options.html",
    "permissions": [ "tabs", "storage", "webRequest" ],
    "update_url": "https://clients2.google.com/service/update2/crx",
-   "version": "1.4.1",
+   "version": "1.4.2",
    "web_accessible_resources": [ {
       "matches": [ "*://*/*" ],
       "resources": [ "icon64.png" ]
