@@ -263,7 +263,8 @@
         if (!table) {
             $id("detailsColumnRow").hidden = true;
             const hint = {
-                list: 'No list results yet: extract a list in the "Extract list" tab first, or use another source.',
+                list: 'No list results yet: extract a list in the "Extract list" tab first, or use another source. ' +
+                    "After a run, the tab shows the last visited page: open the list page again, then click the extension icon.",
                 csv: "",
                 paste: ""
             }[state.source];
@@ -278,18 +279,24 @@
             if (ratio > 0.5 && (best === -1 || ratio > ratios[best])) best = index;
         });
 
+        // Without a column of mostly URLs, the column with the most URLs is preselected
+        let most = 0;
+        ratios.forEach((ratio, index) => {
+            if (ratio > ratios[most]) most = index;
+        });
+
         table.fields.forEach((name, index) => {
             const option = document.createElement("option");
             option.value = String(index);
-            option.textContent = ratios[index] > 0.5 ? name : name + " (no URLs)";
+            option.textContent = ratios[index] > 0.5 ? name : name + (ratios[index] > 0 ? " (few URLs)" : " (no URLs)");
             select.appendChild(option);
         });
         $id("detailsColumnRow").hidden = false;
 
         const keep = state.columnIndex >= 0 && state.columnIndex < table.fields.length &&
             ratios[state.columnIndex] > 0.5 ? state.columnIndex : best;
-        select.value = String(keep >= 0 ? keep : 0);
-        applyColumn(best === -1 ? "No column of this source contains URLs." : "");
+        select.value = String(keep >= 0 ? keep : most);
+        applyColumn(ratios[most] > 0 ? "" : "No column of this source contains URLs.");
     }
 
     /**
