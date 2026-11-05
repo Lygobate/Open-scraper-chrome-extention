@@ -437,6 +437,650 @@
         }, 100);
     }
 
+    // --- Page details extraction: field picker and per-page extraction ---
+
+    // Classes added to page elements by this extension; never used in generated selectors
+    var OWN_CLASS_PREFIXES = ["tablescraper-", "openscraper-"];
+    // Class names that describe a transient UI state rather than the element itself
+    var STATE_CLASS_PATTERN = /^(is-|has-)|^(active|selected|hover|hovered|focus|focused|open|opened|closed|visible|hidden|current|disabled|checked|expanded|collapsed|show|showing|in)$/i;
+    // Class names produced by CSS-in-JS tools, regenerated on every build
+    var GENERATED_CLASS_PATTERN = /^(sc|css|jsx|emotion|svelte)-/i;
+    // Attributes written for automated tests: the most stable anchors on a page
+    var TEST_ATTRIBUTES = ["data-testid", "data-test-id", "data-test", "data-qa", "data-cy"];
+    // Attributes that usually describe what an element is
+    var DESCRIPTIVE_ATTRIBUTES = ["aria-label", "itemprop", "role", "name", "title", "alt", "placeholder", "type"];
+    var MAX_FIELD_SELECTORS = 3;
+    var MAX_ANCESTOR_DEPTH = 6;
+    var MAX_SELECTOR_TRIES = 1000;
+    var MEDIA_ELEMENTS = "img, video, audio";
+    var PICKER_BLOCKED_EVENTS = ["click", "dblclick", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend", "submit"];
+    var PICKER_HOVER_CLASS = "openscraper-hover";
+    var PICKER_PICKED_CLASS = "openscraper-picked";
+    var PICKER_ACTIVE_CLASS = "openscraper-picking";
+
+    // Active picker state (null when the picker is off), fields picked so far and pending poll callbacks
+    var fieldPicker = null;
+    var pickedFields = [];
+    var pendingPickerPolls = [];
+
+    /**
+     * Trims a text and collapses its inner whitespace to single spaces.
+     * @param {string} text - Raw text.
+     * @returns {string} Normalized text.
+     */
+    function normalizeWhitespace(text) {
+        return (text || "").replace(/\s+/g, " ").trim();
+    }
+
+    /**
+     * Reads the visible text of an element: typed value for form fields, chosen label for a
+     * drop-down list, rendered text otherwise. Non-HTML elements (SVG) have no text.
+     * @param {Element} element - Element to read.
+     * @returns {string} Normalized text, or "".
+     */
+    function getElementText(element) {
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+            return normalizeWhitespace(element.value);
+        }
+        if (element instanceof HTMLSelectElement) {
+            var option = element.options[element.selectedIndex];
+            return option ? normalizeWhitespace(option.text) : "";
+        }
+        if (!(element instanceof HTMLElement)) return "";
+        return normalizeWhitespace(element.innerText);
+    }
+
+    /**
+     * Returns the absolute address of the link the element is, or is inside of.
+     * @param {Element} element - Element to read.
+     * @returns {string} Absolute URL, or "" (no link, or a javascript: link).
+     */
+    function getElementLink(element) {
+        var anchor = element.closest("a[href], area[href]");
+        if (!(anchor instanceof HTMLAnchorElement || anchor instanceof HTMLAreaElement)) return "";
+        var href = (anchor.href || "").trim();
+        return /^javascript:/i.test(href) ? "" : href;
+    }
+
+    /**
+     * Tells whether two elements occupy the same box on screen (2 px tolerance).
+     * @param {Element} first - First element.
+     * @param {Element} second - Second element.
+     * @returns {boolean} True if both boxes match.
+     */
+    function haveSameBox(first, second) {
+        var a = first.getBoundingClientRect();
+        var b = second.getBoundingClientRect();
+        return Math.abs(a.left - b.left) <= 2 && Math.abs(a.top - b.top) <= 2 &&
+            Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2;
+    }
+
+    /**
+     * Returns the absolute source of the image, video or audio element that the element is,
+     * or that fills exactly the element's box (or is its only media when it has no text).
+     * @param {Element} element - Element to read.
+     * @returns {string} Absolute URL, or "" (no media, or an inline data: source).
+     */
+    function getElementImage(element) {
+        var media = null;
+        if (element.matches(MEDIA_ELEMENTS)) {
+            media = element;
+        } else {
+            var candidates = element.querySelectorAll(MEDIA_ELEMENTS);
+            for (var i = 0; i < candidates.length && !media; i++) {
+                if (haveSameBox(candidates[i], element)) media = candidates[i];
+            }
+            if (!media && candidates.length === 1 && !getElementText(element)) media = candidates[0];
+        }
+        if (!media) return "";
+        var src = media.currentSrc || media.src || "";
+        if (!src) {
+            var source = media.querySelector("source[src]");
+            src = source ? source.src : "";
+        }
+        src = src.trim();
+        return /^data:/i.test(src) ? "" : src;
+    }
+
+    /**
+     * Reads one kind of value from an element.
+     * @param {Element} element - Element to read.
+     * @param {"text"|"link"|"image"} kind - Kind of value.
+     * @returns {string} The value, or "".
+     */
+    function readFieldValue(element, kind) {
+        if (kind === "link") return getElementLink(element);
+        if (kind === "image") return getElementImage(element);
+        return getElementText(element);
+    }
+
+    /**
+     * Escapes an identifier for use in a CSS selector.
+     * @param {string} value - Raw identifier.
+     * @returns {string} Escaped identifier.
+     */
+    function escapeCssIdentifier(value) {
+        return window.CSS && CSS.escape ? CSS.escape(value) : value.replace(/[^\w-]/g, "\\$&");
+    }
+
+    /**
+     * Builds an attribute selector, exact or by prefix.
+     * @param {string} name - Attribute name.
+     * @param {string} value - Attribute value (or prefix).
+     * @param {boolean} [isPrefix=false] - Match the beginning of the value only.
+     * @returns {string} Attribute selector.
+     */
+    function buildAttributeSelector(name, value, isPrefix) {
+        return "[" + name + (isPrefix ? "^=" : "=") + '"' + value.replace(/["\\]/g, "\\$&") + '"]';
+    }
+
+    /**
+     * Tells whether a class was added by this extension.
+     * @param {string} className - Class name.
+     * @returns {boolean} True for extension classes.
+     */
+    function isOwnClass(className) {
+        return OWN_CLASS_PREFIXES.some(function(prefix) { return className.indexOf(prefix) === 0; });
+    }
+
+    /**
+     * Tells whether a class looks stable across pages: no digits, not a state, not generated.
+     * @param {string} className - Class name.
+     * @returns {boolean} True for a stable class.
+     */
+    function isStableClass(className) {
+        return className.length > 1 && className.length <= 40 && !/\d/.test(className) &&
+            /^[a-zA-Z_-][\w-]*$/.test(className) && !isOwnClass(className) &&
+            !STATE_CLASS_PATTERN.test(className) && !GENERATED_CLASS_PATTERN.test(className);
+    }
+
+    /**
+     * Tells whether an id looks like a word: no digits and few changes between lower case,
+     * upper case and other characters (generated ids switch often).
+     * @param {string} id - Element id.
+     * @returns {boolean} True for a meaningful id.
+     */
+    function isWordLikeId(id) {
+        if (!id || id.length > 40 || /\d/.test(id)) return false;
+        var changes = 0;
+        var previous = null;
+        for (var i = 0; i < id.length; i++) {
+            var ch = id[i];
+            var type = ch >= "a" && ch <= "z" ? "lower" : (ch >= "A" && ch <= "Z" ? "upper" : "other");
+            if (previous && type !== previous) changes++;
+            previous = type;
+        }
+        return changes <= 4;
+    }
+
+    /**
+     * Lists the ways to designate one element at its own level, from the most meaningful
+     * (rank 0) to the most fragile (rank 5).
+     * @param {Element} element - Element to describe.
+     * @returns {Array<{selector: string, rank: number}>} Candidate selector steps.
+     */
+    function getSelectorSteps(element) {
+        var tag = escapeCssIdentifier(element.localName);
+        var steps = [];
+        var add = function(selector, rank) {
+            if (!steps.some(function(step) { return step.selector === selector; })) {
+                steps.push({ selector: selector, rank: rank });
+            }
+        };
+
+        // Rank 0: test attributes; numeric parts are dropped by matching the prefix only
+        TEST_ATTRIBUTES.forEach(function(name) {
+            var value = element.getAttribute(name);
+            if (!value) return;
+            if (!/\d/.test(value)) {
+                add(buildAttributeSelector(name, value), 0);
+            } else if (value.split(/\d/)[0].length >= 3) {
+                add(buildAttributeSelector(name, value.split(/\d/)[0], true), 0);
+            }
+        });
+
+        // Rank 1: descriptive attributes and other data attributes without digits
+        DESCRIPTIVE_ATTRIBUTES.forEach(function(name) {
+            var value = element.getAttribute(name);
+            if (!value || value.length > 60) return;
+            if (!/\d/.test(value)) {
+                add(tag + buildAttributeSelector(name, value), 1);
+            } else if (value.split(/\d/)[0].trim().length >= 3) {
+                add(tag + buildAttributeSelector(name, value.split(/\d/)[0], true), 1);
+            }
+        });
+        Array.prototype.forEach.call(element.attributes, function(attribute) {
+            var name = attribute.name;
+            if (name.indexOf("data-") !== 0 || TEST_ATTRIBUTES.indexOf(name) !== -1) return;
+            if (/\d/.test(name) || !attribute.value || attribute.value.length > 40 || /\d/.test(attribute.value)) return;
+            add(tag + buildAttributeSelector(name, attribute.value), 1);
+        });
+
+        // Rank 2: id that looks like a word
+        if (typeof element.id === "string" && isWordLikeId(element.id)) {
+            add("#" + escapeCssIdentifier(element.id), 2);
+        }
+
+        // Rank 3: stable classes, alone then by pairs
+        var classes = Array.prototype.filter.call(element.classList, isStableClass).slice(0, 4);
+        classes.forEach(function(className) {
+            add(tag + "." + escapeCssIdentifier(className), 3);
+        });
+        for (var i = 0; i < classes.length; i++) {
+            for (var j = i + 1; j < classes.length; j++) {
+                add(tag + "." + escapeCssIdentifier(classes[i]) + "." + escapeCssIdentifier(classes[j]), 3);
+            }
+        }
+
+        // Rank 4: tag alone; rank 5: tag and position among siblings of the same tag
+        add(tag, 4);
+        add(tag + ":nth-of-type(" + getTypeIndex(element) + ")", 5);
+        return steps;
+    }
+
+    /**
+     * Returns the 1-based position of an element among its siblings with the same tag.
+     * @param {Element} element - Element.
+     * @returns {number} Position.
+     */
+    function getTypeIndex(element) {
+        var index = 1;
+        for (var sibling = element.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+            if (sibling.localName === element.localName) index++;
+        }
+        return index;
+    }
+
+    /**
+     * Tells whether a selector designates the element as its first match in the page.
+     * @param {string} selector - CSS selector.
+     * @param {Element} element - Expected element.
+     * @returns {boolean} True if document.querySelector(selector) is the element.
+     */
+    function selectsFirst(selector, element) {
+        try {
+            return document.querySelector(selector) === element;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
+     * Builds the structural path of an element: tag and position at each level, from the
+     * closest ancestor with a meaningful id (or from body).
+     * @param {Element} element - Element.
+     * @returns {string} CSS selector.
+     */
+    function buildStructuralSelector(element) {
+        var parts = [];
+        var node = element;
+        while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+            if (node !== element && typeof node.id === "string" && isWordLikeId(node.id) &&
+                document.querySelectorAll("#" + escapeCssIdentifier(node.id)).length === 1) {
+                parts.unshift("#" + escapeCssIdentifier(node.id));
+                return parts.join(" > ");
+            }
+            parts.unshift(escapeCssIdentifier(node.localName) + ":nth-of-type(" + getTypeIndex(node) + ")");
+            node = node.parentElement;
+        }
+        parts.unshift("body");
+        return parts.join(" > ");
+    }
+
+    /**
+     * Builds up to three selectors that each find the element first in the page, ordered from
+     * the most meaningful to the most fragile. Alternatives avoid reusing the same step, so that
+     * one page change does not break all of them; the last one is always the structural path.
+     * @param {Element} element - Element picked by the user.
+     * @returns {string[]} Selectors.
+     */
+    function buildFieldSelectors(element) {
+        var found = [];
+        var tries = 0;
+        var ownSteps = getSelectorSteps(element).filter(function(step) { return step.rank <= 4; });
+
+        ownSteps.forEach(function(step) {
+            tries++;
+            if (selectsFirst(step.selector, element)) {
+                found.push({ selector: step.selector, score: step.rank + 0.5, parts: [step.selector] });
+            }
+        });
+
+        var ancestor = element.parentElement;
+        for (var depth = 1; ancestor && ancestor !== document.documentElement && depth <= MAX_ANCESTOR_DEPTH; depth++) {
+            var ancestorSteps = getSelectorSteps(ancestor).filter(function(step) { return step.rank <= 3; });
+            for (var a = 0; a < ancestorSteps.length && tries < MAX_SELECTOR_TRIES; a++) {
+                for (var o = 0; o < ownSteps.length && tries < MAX_SELECTOR_TRIES; o++) {
+                    tries++;
+                    var selector = ancestorSteps[a].selector + " " + ownSteps[o].selector;
+                    if (selectsFirst(selector, element)) {
+                        found.push({
+                            selector: selector,
+                            score: Math.max(ancestorSteps[a].rank, ownSteps[o].rank) + depth / 10,
+                            parts: [ancestorSteps[a].selector, ownSteps[o].selector]
+                        });
+                    }
+                }
+            }
+            ancestor = ancestor.parentElement;
+        }
+
+        found.sort(function(x, y) { return x.score - y.score; });
+
+        var chosen = [];
+        var usedParts = {};
+        found.forEach(function(candidate) {
+            if (chosen.length >= MAX_FIELD_SELECTORS - 1) return;
+            if (candidate.parts.some(function(part) { return usedParts[part]; })) return;
+            chosen.push(candidate.selector);
+            candidate.parts.forEach(function(part) { usedParts[part] = true; });
+        });
+        found.forEach(function(candidate) {
+            if (chosen.length < MAX_FIELD_SELECTORS - 1 && chosen.indexOf(candidate.selector) === -1) {
+                chosen.push(candidate.selector);
+            }
+        });
+
+        var structural = buildStructuralSelector(element);
+        if (chosen.indexOf(structural) === -1 && selectsFirst(structural, element)) chosen.push(structural);
+        return chosen.slice(0, MAX_FIELD_SELECTORS);
+    }
+
+    /**
+     * Suggests a column name: first class of the element or of its closest ancestor with one,
+     * else the tag name.
+     * @param {Element} element - Picked element.
+     * @returns {string} Column name.
+     */
+    function suggestFieldName(element) {
+        for (var node = element; node && node.nodeType === 1 && node !== document.body; node = node.parentElement) {
+            var className = Array.prototype.find.call(node.classList, function(cls) { return !isOwnClass(cls); });
+            if (className) return className.replace(/\./g, "_");
+        }
+        return element.localName;
+    }
+
+    /**
+     * Returns what the popup needs to know about the picker.
+     * @returns {{active: boolean, picks: Array<Object>}} Picker snapshot.
+     */
+    function getPickerSnapshot() {
+        return { active: !!fieldPicker, picks: pickedFields.slice() };
+    }
+
+    /**
+     * Answers every pending poll with the current picker snapshot.
+     */
+    function answerPickerPolls() {
+        var polls = pendingPickerPolls;
+        pendingPickerPolls = [];
+        polls.forEach(function(sendResponse) { sendResponse(getPickerSnapshot()); });
+    }
+
+    /**
+     * Tells whether an event comes from the picker's own floating panel.
+     * @param {Event} event - DOM event.
+     * @returns {boolean} True for panel events.
+     */
+    function isPickerPanelEvent(event) {
+        return !!fieldPicker && event.composedPath().indexOf(fieldPicker.panelHost) !== -1;
+    }
+
+    /**
+     * Moves the hover highlight to an element.
+     * @param {Element|null} element - Element to highlight.
+     */
+    function setPickerHover(element) {
+        if (fieldPicker.hovered) fieldPicker.hovered.classList.remove(PICKER_HOVER_CLASS);
+        fieldPicker.hovered = element;
+        if (element) element.classList.add(PICKER_HOVER_CLASS);
+    }
+
+    /**
+     * Adds the fields of an element: its text, its link and its image, when present.
+     * The same value kind of the same element is never added twice.
+     * @param {Element} element - Element chosen by the user.
+     */
+    function pickElement(element) {
+        if (!element || element === document.body || element === document.documentElement) return;
+        var kinds = fieldPicker.pickedKinds.get(element) || [];
+        var name = suggestFieldName(element);
+        var selectors = null;
+        var added = 0;
+        [["text", ""], ["link", " link"], ["image", " image"]].forEach(function(entry) {
+            var kind = entry[0];
+            if (kinds.indexOf(kind) !== -1) return;
+            var value = readFieldValue(element, kind);
+            if (!value) return;
+            selectors = selectors || buildFieldSelectors(element);
+            pickedFields.push({ name: name + entry[1], kind: kind, selectors: selectors, sample: value.slice(0, 300) });
+            kinds.push(kind);
+            added++;
+        });
+        fieldPicker.pickedKinds.set(element, kinds);
+        if (added) element.classList.add(PICKER_PICKED_CLASS);
+        updatePickerPanel(added ? "" : "Nothing to extract from this element.");
+        answerPickerPolls();
+    }
+
+    /**
+     * Blocks the page's own reaction to clicks while picking, and picks on click.
+     * @param {Event} event - Mouse, pointer, touch or submit event.
+     */
+    function onPickerBlockedEvent(event) {
+        if (isPickerPanelEvent(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (event.type === "click" && event.target instanceof Element) {
+            pickElement(fieldPicker.hovered && fieldPicker.hovered.contains(event.target) ? fieldPicker.hovered : event.target);
+        }
+    }
+
+    /**
+     * Highlights the element under the mouse.
+     * @param {MouseEvent} event - Mouse over event.
+     */
+    function onPickerMouseOver(event) {
+        if (isPickerPanelEvent(event)) {
+            setPickerHover(null);
+            return;
+        }
+        if (event.target instanceof Element && event.target !== fieldPicker.hovered) {
+            fieldPicker.ancestorTrail = [];
+            setPickerHover(event.target);
+        }
+    }
+
+    /**
+     * Keyboard: Up selects a larger element, Down goes back, Enter picks, Escape finishes.
+     * @param {KeyboardEvent} event - Key down event.
+     */
+    function onPickerKeyDown(event) {
+        var hovered = fieldPicker.hovered;
+        var handled = true;
+        if (event.key === "Escape") {
+            stopFieldPicker();
+        } else if (event.key === "ArrowUp" && hovered && hovered.parentElement &&
+            hovered.parentElement !== document.body && hovered.parentElement !== document.documentElement) {
+            fieldPicker.ancestorTrail.push(hovered);
+            setPickerHover(hovered.parentElement);
+        } else if (event.key === "ArrowDown" && fieldPicker.ancestorTrail.length) {
+            setPickerHover(fieldPicker.ancestorTrail.pop());
+        } else if (event.key === "Enter" && hovered) {
+            pickElement(hovered);
+        } else {
+            handled = false;
+        }
+        if (handled) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+        }
+    }
+
+    /**
+     * Creates the small floating panel shown in the page while picking (isolated in a shadow root).
+     * @returns {{host: Element, status: Element, count: Element}} Panel elements.
+     */
+    function createPickerPanel() {
+        var host = document.createElement("div");
+        host.setAttribute("data-openscraper-picker", "");
+        host.style.cssText = "all: initial; position: fixed; z-index: 2147483647; right: 16px; bottom: 16px;";
+        var root = host.attachShadow({ mode: "open" });
+        root.innerHTML =
+            "<style>" +
+            ".panel{font:13px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;color:#f1f5f9;background:#0f172a;" +
+            "border:1px solid rgba(6,182,212,.45);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.45);padding:12px 14px;width:260px}" +
+            ".title{font-weight:600;color:#06b6d4;margin:0 0 6px}" +
+            ".help{color:#94a3b8;margin:0 0 8px}" +
+            ".count{margin:0 0 8px}" +
+            ".status{color:#f59e0b;margin:0 0 8px;min-height:0}" +
+            ".row{display:flex;gap:8px}" +
+            "button{font:inherit;border-radius:8px;padding:6px 10px;cursor:pointer;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#f1f5f9}" +
+            "button.finish{background:#06b6d4;border-color:#06b6d4;color:#0f172a;font-weight:600;flex:1}" +
+            "</style>" +
+            "<div class='panel' role='dialog' aria-label='Open Scraper field picker'>" +
+            "<p class='title'>Open Scraper: pick fields</p>" +
+            "<p class='help'>Click the data to extract. Up/Down arrows select a larger or smaller element, Enter adds it, Escape finishes.</p>" +
+            "<p class='count'></p><p class='status'></p>" +
+            "<div class='row'><button type='button' class='move'>Move</button><button type='button' class='finish'>Finish picking</button></div>" +
+            "</div>";
+        root.querySelector(".finish").addEventListener("click", function() { stopFieldPicker(); });
+        root.querySelector(".move").addEventListener("click", function() {
+            var onRight = host.style.right !== "auto";
+            host.style.right = onRight ? "auto" : "16px";
+            host.style.left = onRight ? "16px" : "auto";
+        });
+        document.documentElement.appendChild(host);
+        return { host: host, status: root.querySelector(".status"), count: root.querySelector(".count") };
+    }
+
+    /**
+     * Refreshes the counter and status line of the picker panel.
+     * @param {string} status - Status text ("" to clear).
+     */
+    function updatePickerPanel(status) {
+        if (!fieldPicker) return;
+        fieldPicker.panel.count.textContent = pickedFields.length + (pickedFields.length === 1 ? " field" : " fields") + " picked";
+        fieldPicker.panel.status.textContent = status || "";
+    }
+
+    /**
+     * Removes the marks left on picked elements.
+     */
+    function clearPickedMarks() {
+        document.querySelectorAll("." + PICKER_PICKED_CLASS).forEach(function(element) {
+            element.classList.remove(PICKER_PICKED_CLASS);
+        });
+    }
+
+    /**
+     * Turns on the field picker: hover highlight, click to pick, page clicks blocked.
+     */
+    function startFieldPicker() {
+        if (fieldPicker) return;
+        clearPickedMarks();
+        pickedFields = [];
+        var panel = createPickerPanel();
+        fieldPicker = {
+            hovered: null,
+            ancestorTrail: [],
+            pickedKinds: new Map(),
+            panel: panel,
+            panelHost: panel.host
+        };
+        document.documentElement.classList.add(PICKER_ACTIVE_CLASS);
+        PICKER_BLOCKED_EVENTS.forEach(function(type) {
+            window.addEventListener(type, onPickerBlockedEvent, true);
+        });
+        window.addEventListener("mouseover", onPickerMouseOver, true);
+        window.addEventListener("keydown", onPickerKeyDown, true);
+        updatePickerPanel("");
+        window.focus();
+    }
+
+    /**
+     * Turns off the field picker. Picked elements stay marked until the next start.
+     */
+    function stopFieldPicker() {
+        if (!fieldPicker) return;
+        PICKER_BLOCKED_EVENTS.forEach(function(type) {
+            window.removeEventListener(type, onPickerBlockedEvent, true);
+        });
+        window.removeEventListener("mouseover", onPickerMouseOver, true);
+        window.removeEventListener("keydown", onPickerKeyDown, true);
+        setPickerHover(null);
+        fieldPicker.panelHost.remove();
+        document.documentElement.classList.remove(PICKER_ACTIVE_CLASS);
+        fieldPicker = null;
+        answerPickerPolls();
+    }
+
+    /**
+     * Extracts one value per field from the current page: for each field, the first selector
+     * that finds an element wins; a field with no match gives "".
+     * @param {Array<{kind: string, selectors: string[]}>} fields - Fields to extract.
+     * @returns {string[]} Values, in field order.
+     */
+    function extractPageDetails(fields) {
+        return (fields || []).map(function(field) {
+            var selectors = Array.isArray(field.selectors) ? field.selectors : [];
+            for (var i = 0; i < selectors.length; i++) {
+                var element = null;
+                try {
+                    element = document.querySelector(selectors[i]);
+                } catch (e) {
+                    element = null;
+                }
+                if (element) return readFieldValue(element, field.kind);
+            }
+            return "";
+        });
+    }
+
+    /**
+     * Handles the page details messages sent by the scraping window.
+     * @param {Object} message - Message with an action starting with "details".
+     * @param {Function} sendResponse - Message callback.
+     */
+    function handleDetailsMessage(message, sendResponse) {
+        switch (message.action) {
+            case "detailsPing":
+                sendResponse({ ready: true, url: window.location.href });
+                break;
+            case "detailsPickerStart":
+                startFieldPicker();
+                sendResponse({ ok: true, url: window.location.href });
+                break;
+            case "detailsPickerPoll":
+                // Long poll: answered at once if something changed, else on the next pick or stop
+                if (!fieldPicker || message.known !== pickedFields.length) {
+                    sendResponse(getPickerSnapshot());
+                } else {
+                    pendingPickerPolls.push(sendResponse);
+                }
+                break;
+            case "detailsPickerStop":
+                stopFieldPicker();
+                sendResponse(getPickerSnapshot());
+                break;
+            case "detailsClearMarks":
+                clearPickedMarks();
+                sendResponse({ ok: true });
+                break;
+            case "detailsExtract":
+                try {
+                    sendResponse({ ok: true, url: window.location.href, values: extractPageDetails(message.fields) });
+                } catch (e) {
+                    sendResponse({ error: String(e && e.message || e) });
+                }
+                break;
+            default:
+                sendResponse({});
+        }
+    }
+
     // --- Chrome Runtime Message Listener ---
 
     chrome.runtime.onMessage.addListener(function(message, _sender, sendResponse) {
@@ -590,6 +1234,11 @@
 
         if ("markNextButton" === message.action) {
             clickNextButton(message.selector, sendResponse, true);
+            return true;
+        }
+
+        if (typeof message.action === "string" && message.action.indexOf("details") === 0) {
+            handleDetailsMessage(message, sendResponse);
             return true;
         }
 
