@@ -6,6 +6,14 @@ A free, secure, and improved fork of the popular **"Instant Data Scraper"** exte
 
 **📦 Available on the Chrome Web Store:** [Install Open-Scraper](https://chromewebstore.google.com/detail/open-scraper/bbolpnicmijleigcpabhabogobmbnkmd)
 
+## 📸 Overview
+
+<img src="docs/hero.png" alt="Open Scraper: tables and lists to CSV or Excel, one click" width="100%">
+
+<img src="docs/how-it-works.png" alt="How Open Scraper works: locate the table, preview the results, choose your method, extract and export" width="100%">
+
+<img src="docs/privacy.png" alt="Open Scraper keeps your data on your computer: 100% local, zero data collection, open source, no account, no remote code, readable code" width="100%">
+
 ## ⚠️ Context: Why this project?
 
 Attention all OSINT investigators and enthusiasts.
