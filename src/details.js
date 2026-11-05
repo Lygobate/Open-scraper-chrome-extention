@@ -14,6 +14,9 @@
     const ANSWER_TIMEOUT_MS = 10000;
     const RETRY_INTERVAL_MS = 500;
 
+    // Name of the port that keeps the page picker alive while this window is open
+    const PICKER_PORT_NAME = "openscraper-details-picker";
+
     // Extensions of image files: such URLs are not pages to visit
     const IMAGE_URL_PATTERN = /\.(jpe?g|gif|png|bmp|webp|svg|avif|ico)$/i;
 
@@ -40,6 +43,7 @@
         nextFieldId: 1,
         picking: false,
         pickToken: 0,
+        pickerPort: null,
         results: [],
         nextIndex: 0,
         running: false,
@@ -595,6 +599,11 @@
             endPicking("The page does not answer. Reload it, or open a regular web page, then try again.", "error");
             return;
         }
+        try {
+            state.pickerPort = chromeInstance.tabs.connect(targetTabId, { name: PICKER_PORT_NAME });
+        } catch (error) {
+            state.pickerPort = null;
+        }
         await focusTargetTab();
         showMessage("detailsPickMessage", 'Click the data to extract in the page, then click "Finish picking".');
         pollPicks(token, 0);
@@ -640,6 +649,14 @@
     function endPicking(message, level) {
         state.pickToken++;
         state.picking = false;
+        if (state.pickerPort) {
+            try {
+                state.pickerPort.disconnect();
+            } catch (error) {
+                // Already closed with its page
+            }
+            state.pickerPort = null;
+        }
         showMessage("detailsPickMessage", message, level);
         updateBusyUi();
     }

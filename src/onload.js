@@ -457,6 +457,10 @@
     var PICKER_HOVER_CLASS = "openscraper-hover";
     var PICKER_PICKED_CLASS = "openscraper-picked";
     var PICKER_ACTIVE_CLASS = "openscraper-picking";
+    // Port opened by the scraping window while picking: picking ends when the window goes away
+    var PICKER_PORT_NAME = "openscraper-details-picker";
+    // Capture phase, and not passive so that touch events can be cancelled too
+    var PICKER_LISTENER_OPTIONS = { capture: true, passive: false };
 
     // Active picker state (null when the picker is off), fields picked so far and pending poll callbacks
     var fieldPicker = null;
@@ -988,11 +992,12 @@
             ancestorTrail: [],
             pickedKinds: new Map(),
             panel: panel,
-            panelHost: panel.host
+            panelHost: panel.host,
+            port: null
         };
         document.documentElement.classList.add(PICKER_ACTIVE_CLASS);
         PICKER_BLOCKED_EVENTS.forEach(function(type) {
-            window.addEventListener(type, onPickerBlockedEvent, true);
+            window.addEventListener(type, onPickerBlockedEvent, PICKER_LISTENER_OPTIONS);
         });
         window.addEventListener("mouseover", onPickerMouseOver, true);
         window.addEventListener("keydown", onPickerKeyDown, true);
@@ -1006,7 +1011,7 @@
     function stopFieldPicker() {
         if (!fieldPicker) return;
         PICKER_BLOCKED_EVENTS.forEach(function(type) {
-            window.removeEventListener(type, onPickerBlockedEvent, true);
+            window.removeEventListener(type, onPickerBlockedEvent, PICKER_LISTENER_OPTIONS);
         });
         window.removeEventListener("mouseover", onPickerMouseOver, true);
         window.removeEventListener("keydown", onPickerKeyDown, true);
@@ -1080,6 +1085,16 @@
                 sendResponse({});
         }
     }
+
+    // The scraping window keeps a port open while picking; if it closes, picking ends
+    chrome.runtime.onConnect.addListener(function(port) {
+        if (port.name !== PICKER_PORT_NAME || !fieldPicker) return;
+        var session = fieldPicker;
+        session.port = port;
+        port.onDisconnect.addListener(function() {
+            if (fieldPicker === session) stopFieldPicker();
+        });
+    });
 
     // --- Chrome Runtime Message Listener ---
 
