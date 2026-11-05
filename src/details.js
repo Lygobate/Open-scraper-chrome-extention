@@ -39,6 +39,7 @@
         urls: [],
         sampleUrls: [],
         sampleIndex: 0,
+        currentPageUrl: "",
         fields: [],
         nextFieldId: 1,
         picking: false,
@@ -333,8 +334,13 @@
             chooseInitialSample();
         }
         const usable = state.sampleUrls.length;
+        const empty = urls.filter(url => !url.trim()).length;
+        const other = urls.length - usable - empty;
+        const notes = [];
+        if (other) notes.push(other + (other === 1 ? " other value" : " other values"));
+        if (empty) notes.push(empty + " empty");
         $id("detailsUrlCount").textContent = usable + (usable === 1 ? " URL" : " URLs") +
-            (urls.length !== usable ? " (" + (urls.length - usable) + (urls.length - usable === 1 ? " other value)" : " other values)") : "");
+            (notes.length ? " (" + notes.join(", ") + ")" : "");
         updateSampleUi();
         updateRunUi();
     }
@@ -364,19 +370,32 @@
     }
 
     /**
-     * Shows the sample URL (the current page when no URL list is set).
+     * Shows the sample URL. When no URL list is set, the box stays empty and its placeholder
+     * names the current page of the target tab, where fields are then picked.
      */
     async function updateSampleUi() {
         const hasList = state.sampleUrls.length > 0;
+        const input = $id("detailsSampleUrl");
         $id("detailsSamplePrev").disabled = !hasList || state.sampleUrls.length < 2 || isBusy();
         $id("detailsSampleNext").disabled = !hasList || state.sampleUrls.length < 2 || isBusy();
         if (hasList) {
-            $id("detailsSampleUrl").value = state.sampleUrls[state.sampleIndex] || "";
+            input.value = state.sampleUrls[state.sampleIndex] || "";
+            input.placeholder = "";
         } else {
             const tab = await getTargetTab();
-            $id("detailsSampleUrl").value = tab ? tab.url : "";
+            state.currentPageUrl = tab ? tab.url : "";
+            input.value = "";
+            input.placeholder = state.currentPageUrl ? "No URL yet: current page " + state.currentPageUrl : "No URL yet";
         }
         refreshSavedBar();
+    }
+
+    /**
+     * Returns the sample page address: the chosen URL of the list, else the current page.
+     * @returns {string} URL, or "".
+     */
+    function getSampleUrl() {
+        return state.sampleUrls.length ? state.sampleUrls[state.sampleIndex] || "" : state.currentPageUrl;
     }
 
     /**
@@ -919,7 +938,7 @@
     function getExportFileBase() {
         let site = "page";
         try {
-            const hostname = new URL(state.sampleUrls[0] || $id("detailsSampleUrl").value).hostname;
+            const hostname = new URL(state.sampleUrls[0] || getSampleUrl()).hostname;
             const parts = hostname.split(".");
             if (/^[\d.]+$/.test(hostname) || hostname.indexOf(":") > -1) {
                 // IP address: keep all of it
@@ -959,7 +978,7 @@
      */
     function getSampleHost() {
         try {
-            return new URL($id("detailsSampleUrl").value).hostname.replace(/^www\./, "");
+            return new URL(getSampleUrl()).hostname.replace(/^www\./, "");
         } catch (error) {
             return "";
         }
