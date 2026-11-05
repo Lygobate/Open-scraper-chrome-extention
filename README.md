@@ -52,6 +52,8 @@ For those who want to audit the code or run the latest development version:
 
 ### Firefox (coming soon)
 
-A Firefox version is being prepared. To build the package yourself (Node.js required), run `node scripts/build-firefox.mjs`: the zip is generated in `dist/`.
+The Firefox version is coming soon on addons.mozilla.org. Meanwhile, the same source folder works in Firefox: open `about:debugging`, go to **"This Firefox"**, click **"Load Temporary Add-on…"** and pick the `manifest.json` file (the add-on is removed when Firefox closes).
+
+Maintainers: `node scripts/package.mjs` builds the single zip (`dist/open-scraper-<version>.zip`) uploaded to both stores.
 
 Whichever option you choose, the Open-Scraper extension will appear in your list and will be immediately functional and secure to use!
