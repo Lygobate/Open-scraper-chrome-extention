@@ -710,8 +710,25 @@
     }
 
     /**
+     * Returns the step that best identifies the element itself (a stable class first, else a
+     * test attribute, a descriptive attribute or an id), prefixed by its tag; or null when the
+     * element has nothing but its tag.
+     * @param {Element} element - Element.
+     * @returns {string|null} Step such as "p.price", or null.
+     */
+    function getOwnTokenStep(element) {
+        var tag = escapeCssIdentifier(element.localName);
+        var steps = getSelectorSteps(element).filter(function(step) { return step.rank <= 3; });
+        if (!steps.length) return null;
+        var best = steps.filter(function(step) { return step.rank === 3; })[0] || steps[0];
+        return best.selector.indexOf(tag) === 0 ? best.selector : tag + best.selector;
+    }
+
+    /**
      * Builds the structural path of an element: tag and position at each level, from the
-     * closest ancestor with a meaningful id (or from body).
+     * closest ancestor with a meaningful id (or from body). The last step keeps a class or
+     * attribute of the element when it has one, so that the path does not land on another
+     * element at the same place in a page where the expected one is missing.
      * @param {Element} element - Element.
      * @returns {string} CSS selector.
      */
@@ -724,7 +741,9 @@
                 parts.unshift("#" + escapeCssIdentifier(node.id));
                 return parts.join(" > ");
             }
-            parts.unshift(escapeCssIdentifier(node.localName) + ":nth-of-type(" + getTypeIndex(node) + ")");
+            var head = node === element ? (getOwnTokenStep(node) || escapeCssIdentifier(node.localName)) :
+                escapeCssIdentifier(node.localName);
+            parts.unshift(head + ":nth-of-type(" + getTypeIndex(node) + ")");
             node = node.parentElement;
         }
         parts.unshift("body");
@@ -735,20 +754,30 @@
      * Builds up to three selectors that each find the element first in the page, ordered from
      * the most meaningful to the most fragile. Alternatives avoid reusing the same step, so that
      * one page change does not break all of them; the last one is always the structural path.
+     * Every selector keeps a class, attribute or id of the element when it has one; a bare tag
+     * ("h1", "article p") is only used, inside a described ancestor, for an element that has
+     * nothing else. Otherwise, on a page where the element is missing, a fallback would read
+     * another element.
      * @param {Element} element - Element picked by the user.
      * @returns {string[]} Selectors.
      */
     function buildFieldSelectors(element) {
         var found = [];
         var tries = 0;
-        var ownSteps = getSelectorSteps(element).filter(function(step) { return step.rank <= 4; });
+        var ownSteps = getSelectorSteps(element).filter(function(step) { return step.rank <= 3; });
+        var hasOwnToken = ownSteps.length > 0;
+        if (!hasOwnToken) {
+            ownSteps = getSelectorSteps(element).filter(function(step) { return step.rank === 4; });
+        }
 
-        ownSteps.forEach(function(step) {
-            tries++;
-            if (selectsFirst(step.selector, element)) {
-                found.push({ selector: step.selector, score: step.rank + 0.5, parts: [step.selector] });
-            }
-        });
+        if (hasOwnToken) {
+            ownSteps.forEach(function(step) {
+                tries++;
+                if (selectsFirst(step.selector, element)) {
+                    found.push({ selector: step.selector, score: step.rank + 0.5, parts: [step.selector] });
+                }
+            });
+        }
 
         var ancestor = element.parentElement;
         for (var depth = 1; ancestor && ancestor !== document.documentElement && depth <= MAX_ANCESTOR_DEPTH; depth++) {
