@@ -472,12 +472,22 @@
 
     /**
      * Renames header fields according to user custom modifications.
+     * Fields without a usable name (only the extension's own row highlight class) are
+     * labelled "Column N" (1-based position); the internal field name stays the config key.
      * @param {string[]} fields - Original field names.
      * @returns {string[]} List of names after renaming.
      */
     function applyHeaderRenames(fields) {
-        return fields.map(function(field) {
-            return field in scrapingState.config.headers ? scrapingState.config.headers[field] : field;
+        const headers = scrapingState.config.headers;
+        const isUnnamed = field => !(field in headers) && /^(tablescraper-selected-row)?(?: |$)/.test(field);
+        const names = fields.map(field => (field in headers ? headers[field] : field));
+        const usedNames = new Set(names.filter((name, idx) => !isUnnamed(fields[idx])));
+        return names.map(function(name, idx) {
+            if (!isUnnamed(fields[idx])) return name;
+            let columnNumber = idx + 1;
+            while (usedNames.has("Column " + columnNumber)) columnNumber++;
+            usedNames.add("Column " + columnNumber);
+            return "Column " + columnNumber;
         });
     }
 
