@@ -4,6 +4,8 @@
 
 A free, secure, and improved fork of the popular **"Instant Data Scraper"** extension.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-06b6d4?style=for-the-badge)](LICENSE)
+
 **📦 Available on the Chrome Web Store:** [Install Open-Scraper](https://chromewebstore.google.com/detail/open-scraper/bbolpnicmijleigcpabhabogobmbnkmd)
 
 ## 📸 Overview
@@ -65,3 +67,7 @@ The Firefox version is coming soon on addons.mozilla.org. Meanwhile, the same so
 Maintainers: `node scripts/package.mjs` builds the single zip (`dist/open-scraper-<version>.zip`) uploaded to both stores.
 
 Whichever option you choose, the Open-Scraper extension will appear in your list and will be immediately functional and secure to use!
+
+## 📄 License
+
+Open-Scraper is released under the [MIT License](LICENSE). Third-party libraries bundled in `js/` keep their own licenses.
