@@ -1074,6 +1074,19 @@
     }
 
     /**
+     * Returns the HTTP status of the page, when the browser exposes it.
+     * @returns {number} Status code, or 0 when unknown.
+     */
+    function getPageHttpStatus() {
+        try {
+            var entry = performance.getEntriesByType("navigation")[0];
+            return entry && typeof entry.responseStatus === "number" ? entry.responseStatus : 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    /**
      * Handles the page details messages sent by the scraping window.
      * @param {Object} message - Message with an action starting with "details".
      * @param {Function} sendResponse - Message callback.
@@ -1105,7 +1118,13 @@
                 break;
             case "detailsExtract":
                 try {
-                    sendResponse({ ok: true, url: window.location.href, values: extractPageDetails(message.fields) });
+                    var status = getPageHttpStatus();
+                    if (status >= 400) {
+                        // Error page: its text is not the data of the page that was asked for
+                        sendResponse({ ok: false, status: status, url: window.location.href });
+                    } else {
+                        sendResponse({ ok: true, status: status, url: window.location.href, values: extractPageDetails(message.fields) });
+                    }
                 } catch (e) {
                     sendResponse({ error: String(e && e.message || e) });
                 }

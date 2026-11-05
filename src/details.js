@@ -725,7 +725,9 @@
             updateProgress(index, url);
 
             const values = {};
+            let failed = false;
             if (isUsableUrl(url)) {
+                failed = true;
                 if (!(await getTargetTab())) {
                     finishRun(token, "The target tab was closed. Close this window and click the extension icon again.", "error");
                     return;
@@ -745,17 +747,21 @@
                     );
                     if (isCancelled()) return;
                     if (response && response.ok && Array.isArray(response.values)) {
+                        failed = false;
                         fields.forEach((field, i) => { values[field.id] = response.values[i] == null ? "" : String(response.values[i]); });
                     }
                 }
             }
 
-            state.results.push({ url: state.urls[index], values: values });
+            state.results.push({ url: state.urls[index], values: values, failed: failed });
             state.nextIndex = index + 1;
             onResultsChanged();
             updateProgress();
         }
-        finishRun(token, "");
+        const failedCount = state.results.filter(result => result.failed).length;
+        finishRun(token, failedCount ? failedCount + (failedCount === 1 ? " page" : " pages") +
+            " could not be read (error page, time-out or no answer): " +
+            (failedCount === 1 ? "its row only has" : "their rows only have") + " the URL." : "", "warning");
     }
 
     /**
