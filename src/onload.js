@@ -447,8 +447,10 @@
     var GENERATED_CLASS_PATTERN = /^(sc|css|jsx|emotion|svelte)-/i;
     // Attributes written for automated tests: the most stable anchors on a page
     var TEST_ATTRIBUTES = ["data-testid", "data-test-id", "data-test", "data-qa", "data-cy"];
-    // Attributes that usually describe what an element is
-    var DESCRIPTIVE_ATTRIBUTES = ["aria-label", "itemprop", "role", "name", "title", "alt", "placeholder", "type"];
+    // Attributes that usually describe what an element is. Attributes that carry the page's
+    // content (alt, title, aria-label: often the product name) are left out: on another page
+    // they miss, or match another element that shows the sample's content (related items).
+    var DESCRIPTIVE_ATTRIBUTES = ["itemprop", "role", "name", "placeholder", "type"];
     var MAX_FIELD_SELECTORS = 3;
     var MAX_ANCESTOR_DEPTH = 6;
     var MAX_SELECTOR_TRIES = 1000;
@@ -656,7 +658,8 @@
         Array.prototype.forEach.call(element.attributes, function(attribute) {
             var name = attribute.name;
             if (name.indexOf("data-") !== 0 || TEST_ATTRIBUTES.indexOf(name) !== -1) return;
-            if (/\d/.test(name) || !attribute.value || attribute.value.length > 40 || /\d/.test(attribute.value)) return;
+            // A value with spaces is content ("Alpha Lamp"), not a token ("price")
+            if (/\d/.test(name) || !attribute.value || attribute.value.length > 40 || /[\d\s]/.test(attribute.value)) return;
             add(tag + buildAttributeSelector(name, attribute.value), 1);
         });
 
