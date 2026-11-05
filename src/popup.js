@@ -1322,6 +1322,14 @@
     window.OpenScraper = Object.freeze({
         exportCsv: exportCsv,
         exportXlsx: exportXlsx,
-        copyTsv: copyTsv
+        copyTsv: copyTsv,
+        /**
+         * Returns the list results as displayed (renamed headers), or null before the first read.
+         * @returns {{fields: string[], data: Array<Array<*>>}|null} Table of the list tab.
+         */
+        getListResults: function() {
+            if (!scrapingState.data || !scrapingState.config) return null;
+            return prepareDataForExport(scrapingState.data);
+        }
     });
 })();

@@ -76,3 +76,358 @@ body.mode-details {
 body.mode-details .details-panel {
     display: block;
 }
+
+.details-panel [hidden] {
+    display: none !important;
+}
+
+/* === STEPS === */
+
+.osd-step {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+}
+
+.osd-step-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin: 0 0 8px;
+    font-family: var(--font-family);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.osd-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    font-size: 11px;
+    color: var(--accent-teal);
+    background: var(--accent-teal-dim);
+    border-radius: var(--radius-full);
+}
+
+.osd-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    margin-top: 8px;
+}
+
+.osd-grow {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.osd-label {
+    margin: 0;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.osd-hint {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.osd-hint-inline {
+    margin: 0;
+}
+
+.osd-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* === CONTROLS === */
+
+.osd-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 12px;
+    font-family: var(--font-family);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.osd-btn:hover:not(:disabled) {
+    background: var(--bg-glass-hover);
+    border-color: var(--border-glass-active);
+}
+
+.osd-btn:focus-visible,
+.osd-seg:focus-visible,
+.osd-input:focus,
+.osd-select:focus,
+.osd-textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.3);
+}
+
+.osd-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.osd-btn-primary {
+    color: var(--accent-teal);
+    background: var(--accent-teal-dim);
+    border-color: rgba(6, 182, 212, 0.35);
+}
+
+.osd-btn-primary:hover:not(:disabled) {
+    background: rgba(6, 182, 212, 0.25);
+    border-color: var(--accent-teal);
+}
+
+.osd-btn-danger {
+    color: var(--accent-rose);
+    background: var(--accent-rose-dim);
+    border-color: rgba(244, 63, 94, 0.35);
+}
+
+.osd-btn-success {
+    color: var(--accent-emerald);
+    background: var(--accent-emerald-dim);
+    border-color: rgba(16, 185, 129, 0.35);
+}
+
+.osd-btn-icon {
+    width: 30px;
+    padding: 0;
+    font-size: 18px;
+    line-height: 1;
+}
+
+.osd-segmented {
+    display: inline-flex;
+    padding: 2px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
+}
+
+.osd-seg {
+    height: 26px;
+    padding: 0 12px;
+    font-family: var(--font-family);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.osd-seg:hover:not(:disabled) {
+    color: var(--text-primary);
+}
+
+.osd-seg.is-active {
+    color: var(--accent-teal);
+    background: var(--accent-teal-dim);
+}
+
+.osd-seg:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.osd-input,
+.osd-select,
+.osd-textarea {
+    height: 30px;
+    padding: 0 8px;
+    font-family: var(--font-family);
+    font-size: 12px;
+    color: var(--text-primary);
+    background: var(--bg-deep);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-sm);
+}
+
+.osd-select {
+    max-width: 260px;
+}
+
+.osd-select option {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+}
+
+.osd-textarea {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-top: 8px;
+    padding: 6px 8px;
+    resize: vertical;
+}
+
+.osd-number {
+    width: 56px;
+}
+
+.osd-inline-input {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0;
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
+.osd-file {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.osd-file::file-selector-button {
+    margin-right: 8px;
+    padding: 4px 10px;
+    font-family: var(--font-family);
+    color: var(--text-primary);
+    background: var(--bg-glass-hover);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+/* === MESSAGES === */
+
+.osd-message {
+    margin-top: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--accent-teal);
+    background: var(--accent-teal-dim);
+    border-radius: var(--radius-sm);
+}
+
+.osd-message-warning {
+    color: var(--accent-amber);
+    background: var(--accent-amber-dim);
+}
+
+.osd-message-error {
+    color: var(--accent-rose);
+    background: var(--accent-rose-dim);
+}
+
+/* === FIELD LIST === */
+
+.osd-field-list {
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.osd-field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 4px 0;
+    border-top: 1px solid var(--border-glass);
+}
+
+.osd-field:first-child {
+    border-top: none;
+}
+
+.osd-kind {
+    flex: 0 0 44px;
+    padding: 2px 0;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    color: var(--accent-blue);
+    background: var(--accent-blue-dim);
+    border-radius: var(--radius-full);
+}
+
+.osd-kind-link {
+    color: var(--accent-teal);
+    background: var(--accent-teal-dim);
+}
+
+.osd-kind-image {
+    color: var(--accent-amber);
+    background: var(--accent-amber-dim);
+}
+
+.osd-field-name {
+    flex: 0 0 170px;
+    height: 26px;
+}
+
+.osd-field-sample {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.osd-field-remove {
+    width: 26px;
+    height: 26px;
+    font-size: 16px;
+}
+
+/* === PROGRESS === */
+
+.osd-progress {
+    margin-top: 10px;
+}
+
+.osd-progress-track {
+    height: 6px;
+    overflow: hidden;
+    background: var(--bg-deep);
+    border-radius: var(--radius-full);
+}
+
+.osd-progress-bar {
+    width: 0;
+    height: 100%;
+    background: var(--accent-teal);
+    border-radius: var(--radius-full);
+    transition: width var(--transition-base);
+}
+
+.osd-progress-text {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.osd-progress-url {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--text-muted);
+}

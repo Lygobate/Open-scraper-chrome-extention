@@ -98,6 +98,66 @@
         </div>
     </div>
     <div id="detailsPanel" class="details-panel" role="tabpanel" aria-labelledby="tabDetails">
+        <section class="osd-step" aria-labelledby="detailsUrlsTitle">
+            <h2 class="osd-step-title" id="detailsUrlsTitle"><span class="osd-step-num">1</span> Pages to visit</h2>
+            <div class="osd-segmented" role="group" aria-label="Where the page URLs come from">
+                <button type="button" class="osd-seg is-active" id="detailsSourceList" data-source="list" aria-pressed="true">List results</button>
+                <button type="button" class="osd-seg" id="detailsSourceCsv" data-source="csv" aria-pressed="false">CSV file</button>
+                <button type="button" class="osd-seg" id="detailsSourcePaste" data-source="paste" aria-pressed="false">Paste URLs</button>
+            </div>
+            <div class="osd-source-pane" id="detailsSourceListPane">
+                <p class="osd-hint">Uses a link column of the rows extracted in the "Extract list" tab.</p>
+            </div>
+            <div class="osd-source-pane" id="detailsSourceCsvPane" hidden>
+                <input type="file" id="detailsCsvFile" accept=".csv,text/csv" class="osd-file">
+                <p class="osd-hint">The first row of the file must contain the column names. The file is read on this computer only.</p>
+            </div>
+            <div class="osd-source-pane" id="detailsSourcePastePane" hidden>
+                <textarea id="detailsPasteUrls" class="osd-textarea" rows="4" spellcheck="false" placeholder="One URL per line"></textarea>
+            </div>
+            <div class="osd-row" id="detailsColumnRow" hidden>
+                <label for="detailsUrlColumn" class="osd-label">URL column</label>
+                <select id="detailsUrlColumn" class="osd-select"></select>
+                <span id="detailsUrlCount" class="osd-count"></span>
+            </div>
+            <div class="osd-message osd-message-warning" id="detailsUrlMessage" role="status" hidden></div>
+        </section>
+
+        <section class="osd-step" aria-labelledby="detailsFieldsTitle">
+            <h2 class="osd-step-title" id="detailsFieldsTitle"><span class="osd-step-num">2</span> Fields to extract</h2>
+            <div class="osd-row">
+                <label for="detailsSampleUrl" class="osd-label">Sample page</label>
+                <button type="button" class="osd-btn osd-btn-icon" id="detailsSamplePrev" aria-label="Previous URL" title="Previous URL">&lsaquo;</button>
+                <input type="text" id="detailsSampleUrl" class="osd-input osd-grow" readonly>
+                <button type="button" class="osd-btn osd-btn-icon" id="detailsSampleNext" aria-label="Next URL" title="Next URL">&rsaquo;</button>
+            </div>
+            <div class="osd-row">
+                <button type="button" class="osd-btn osd-btn-primary" id="detailsPickStart">Pick fields in the page</button>
+                <button type="button" class="osd-btn osd-btn-primary" id="detailsPickStop" hidden>Finish picking</button>
+            </div>
+            <div class="osd-message" id="detailsPickMessage" role="status" hidden></div>
+            <ul class="osd-field-list" id="detailsFieldList" aria-label="Fields"></ul>
+            <p class="osd-hint" id="detailsNoFields">No field yet. Click "Pick fields in the page", then click the data you want in the page: each element gives its text, its link and its image.</p>
+        </section>
+
+        <section class="osd-step" aria-labelledby="detailsRunTitle">
+            <h2 class="osd-step-title" id="detailsRunTitle"><span class="osd-step-num">3</span> Extract</h2>
+            <div class="osd-row">
+                <span class="osd-label">Wait per page</span>
+                <label class="osd-inline-input">min <input type="number" id="detailsMinDelay" class="osd-input osd-number" min="0" step="1" value="2"></label>
+                <label class="osd-inline-input">max <input type="number" id="detailsMaxDelay" class="osd-input osd-number" min="0" step="1" value="5"></label>
+                <span class="osd-hint osd-hint-inline">sec</span>
+                <span class="osd-grow"></span>
+                <button type="button" class="osd-btn osd-btn-primary" id="detailsStart">Start</button>
+                <button type="button" class="osd-btn osd-btn-danger" id="detailsStop" hidden>Stop</button>
+            </div>
+            <div class="osd-progress" id="detailsProgress" hidden>
+                <div class="osd-progress-track"><div class="osd-progress-bar" id="detailsProgressBar"></div></div>
+                <div class="osd-progress-text" id="detailsProgressText" role="status"></div>
+                <div class="osd-progress-url" id="detailsProgressUrl"></div>
+            </div>
+            <div class="osd-message osd-message-warning" id="detailsRunMessage" role="status" hidden></div>
+        </section>
     </div>
 
     <script src="../js/papaparse.min.js"></script>
