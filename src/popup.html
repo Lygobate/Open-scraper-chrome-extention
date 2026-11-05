@@ -7,8 +7,13 @@
     <link rel="stylesheet" href="../css/handsontable.full.min.css">
     <link rel="stylesheet" href="design-tokens.css">
     <link rel="stylesheet" href="popup.css">
+    <link rel="stylesheet" href="details.css">
 </head>
 <body>
+    <div id="modeTabs" class="mode-tabs" role="tablist" aria-label="Extraction mode">
+        <button id="tabList" class="mode-tab is-active" role="tab" type="button" aria-selected="true" aria-controls="content">Extract list</button>
+        <button id="tabDetails" class="mode-tab" role="tab" type="button" aria-selected="false" aria-controls="detailsPanel">Extract page details</button>
+    </div>
     <div id="wait">
         <h1 id="waitHeader">Please wait...</h1>
         <div id="noResponseErr" class="alert alert-danger"></div>
@@ -92,6 +97,8 @@
             </button>
         </div>
     </div>
+    <div id="detailsPanel" class="details-panel" role="tabpanel" aria-labelledby="tabDetails">
+    </div>
 
     <script src="../js/papaparse.min.js"></script>
     <script src="../js/jquery-3.1.1.min.js"></script>
@@ -100,5 +107,6 @@
     <script src="../js/handsontable.full.min.js"></script>
     <script src="../js/xlsx.full.min.js"></script>
     <script src="popup.js"></script>
+    <script src="details.js"></script>
 </body>
 </html>
