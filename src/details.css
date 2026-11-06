@@ -247,6 +247,14 @@ body.mode-details .details-panel {
     color: var(--text-secondary);
 }
 
+.osd-count.is-partial {
+    color: var(--accent-amber);
+}
+
+.osd-count.is-complete {
+    color: var(--accent-emerald);
+}
+
 /* === CONTROLS === */
 
 .osd-btn {

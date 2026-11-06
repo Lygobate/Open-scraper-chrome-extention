@@ -1489,11 +1489,11 @@
         state.previewUrl = "";
         if (!template.fields.length) {
             renderPreviewRows(template, {});
-            $id("detailsPreviewStatus").textContent = "No field yet";
+            setPreviewStatus("No field yet");
             return;
         }
         renderPreviewRows(template, null);
-        $id("detailsPreviewStatus").textContent = "Loading the test page…";
+        setPreviewStatus("Loading the test page…");
         const isCancelled = () => token !== state.previewToken;
         state.previewLoading = true;
         let ready;
@@ -1504,10 +1504,10 @@
         }
         if (isCancelled()) return;
         if (!ready) {
-            $id("detailsPreviewStatus").textContent = "The test page does not answer";
+            setPreviewStatus("The test page does not answer");
             return;
         }
-        $id("detailsPreviewStatus").textContent = "Reading…";
+        setPreviewStatus("Reading…");
         const fields = template.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
         // With "Load full page" (or the reload button), the first read scrolls through the page
         // first, like a run
@@ -1519,7 +1519,7 @@
                 fullPage: fullPage, limitMs: fullPage ? Math.max(1, template.wait.max) * 1000 : 0 });
             if (isCancelled()) return;
             if (!response || !Array.isArray(response.values)) {
-                $id("detailsPreviewStatus").textContent = "The test page does not answer";
+                setPreviewStatus("The test page does not answer");
                 return;
             }
             connectSessionPort(response.doc);
@@ -1527,8 +1527,8 @@
             state.previewUrl = response.url || "";
             const found = response.values.filter(value => value).length;
             const complete = found === template.fields.length;
-            $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found" +
-                (complete || waitMs ? "" : " · waiting for the others…");
+            setPreviewStatus(found + " / " + template.fields.length + " found" +
+                (complete || waitMs ? "" : " · waiting for the others…"), complete ? "complete" : "partial");
             // Kept by field id: the fields may be moved meanwhile
             const values = {};
             template.fields.forEach((field, i) => { values[field.id] = response.values[i] || ""; });
@@ -1575,6 +1575,19 @@
         const values = state.previewValues;
         const usable = !!values && state.previewTemplateId === template.id && template.fields.every(field => field.id in values);
         if (usable || !values) renderPreviewRows(template, usable ? values : null);
+    }
+
+    /**
+     * Shows the preview status: green when every field is found, orange when some are missing,
+     * neutral for the other texts (loading, no field…).
+     * @param {string} text - Status text.
+     * @param {"complete"|"partial"} [level] - Count level, none for a neutral text.
+     */
+    function setPreviewStatus(text, level) {
+        const status = $id("detailsPreviewStatus");
+        status.textContent = text;
+        status.classList.toggle("is-complete", level === "complete");
+        status.classList.toggle("is-partial", level === "partial");
     }
 
     /**
