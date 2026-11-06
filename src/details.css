@@ -858,7 +858,7 @@ body.mode-details .details-panel {
 
 .osd-counters {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: var(--space-sm);
     margin-top: 12px;
 }

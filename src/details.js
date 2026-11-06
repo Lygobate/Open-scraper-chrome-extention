@@ -105,6 +105,8 @@
         runId: 0,
         resolveStop: null,
         elapsedMs: 0,
+        // Speed shown, set when a row is added ("" before the first one)
+        speed: "",
         runStartedAt: 0,
         ticker: 0,
         grid: null,
@@ -2010,6 +2012,7 @@
         state.extracted = 0;
         state.failed = 0;
         state.elapsedMs = 0;
+        state.speed = "";
         showMessage("detailsRunMessage", "");
         rebuildGridIfNeeded(true);
         updateRunUi();
@@ -2057,6 +2060,15 @@
     }
 
     /**
+     * Works out the speed shown once a row is added: rows per minute of run time (the time
+     * while stopped does not count, as in the duration).
+     */
+    function updateSpeed() {
+        const minutes = getElapsedMs() / 60000;
+        state.speed = minutes > 0 ? (state.results.length / minutes).toFixed(1) + " / min" : "";
+    }
+
+    /**
      * Counts the valid URLs not visited yet.
      * @returns {number} Remaining pages.
      */
@@ -2071,6 +2083,7 @@
         $id("detailsExtracted").textContent = String(state.extracted);
         $id("detailsRemaining").textContent = String(getRemaining());
         $id("detailsDuration").textContent = formatDuration(getElapsedMs());
+        $id("detailsSpeed").textContent = state.speed || "–";
         const toggle = $id("detailsRunToggle");
         const finished = state.nextIndex >= state.urls.length && state.results.length > 0;
         toggle.textContent = state.running ? "Stop" : (finished ? "Restart" : "Start");
@@ -2200,6 +2213,7 @@
             }
             state.results.push(row);
             state.nextIndex = index + 1;
+            updateSpeed();
             appendGridRow(row);
             updateRunUi();
         }
