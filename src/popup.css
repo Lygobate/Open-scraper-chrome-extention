@@ -474,23 +474,11 @@ form {
     color: var(--accent-rose);
 }
 
-/* Custom scrollbar for Handsontable */
-.wtHolder::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-}
-
-.wtHolder::-webkit-scrollbar-track {
-    background: var(--bg-deep);
-}
-
-.wtHolder::-webkit-scrollbar-thumb {
-    background: var(--bg-elevated);
-    border-radius: 4px;
-}
-
-.wtHolder::-webkit-scrollbar-thumb:hover {
-    background: var(--text-muted);
+/* Scrollbar colours for Handsontable. Only colours: a custom width (::-webkit-scrollbar)
+   makes the real scrollbar differ from the one Handsontable measures, and the grid then
+   stops drawing cells after a scroll to the last column. */
+.wtHolder {
+    scrollbar-color: var(--bg-elevated) var(--bg-deep);
 }
 
 /* === POPUP FOOTER (currently hidden with !important) === */
