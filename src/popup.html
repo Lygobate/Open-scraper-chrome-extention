@@ -16,66 +16,59 @@
     </div>
     <div id="wait">
         <h1 id="waitHeader">Please wait...</h1>
-        <div id="noResponseErr" class="alert alert-danger"></div>
+        <div id="noResponseErr" class="osd-message osd-message-error" style="display: none;"></div>
         <img src="../icon128.png" id="wait-spider" style="width: 128px; height: 128px;"/>
     </div>
     <div id="content" class="popup-content-wrapper">
         <div class="popup-content-body">
-            <div class="col-xs-5">
-                <button type="button" class="btn btn-default btn-block" id="wrongTable">Try another table</button>
-                <div class="more-rows">
-                    <label for="moreRows" class="more-rows-label">More rows</label>
-                    <select id="moreRows" class="more-rows-select">
-                        <option value="none">None</option>
-                        <option value="scroll">Scroll down</option>
-                        <option value="next">Next page button</option>
-                        <option value="loadMore">"Load more" button</option>
-                    </select>
+            <div class="list-top">
+                <div class="osd-counters list-counters" id="stats">
+                    <div class="osd-counter"><span class="osd-counter-value" id="listPages">0</span><span class="osd-counter-label" id="listPagesLabel">pages</span></div>
+                    <div class="osd-counter"><span class="osd-counter-value" id="listRows">0</span><span class="osd-counter-label">rows</span></div>
+                    <div class="osd-counter"><span class="osd-counter-value" id="listLastRows">0</span><span class="osd-counter-label" id="listLastRowsLabel">from last page</span></div>
+                    <div class="osd-counter" title="Working time of the crawl"><span class="osd-counter-value" id="listDuration">00:00</span><span class="osd-counter-label">duration</span></div>
+                    <div class="osd-counter" title="Rows per minute: rows added by crawling divided by the working time"><span class="osd-counter-value" id="listSpeed">&ndash;</span><span class="osd-counter-label">speed</span></div>
                 </div>
-                <button type="button" class="btn btn-primary btn-block" id="locateButton">Locate "Next" button</button>
-                <button type="button" class="btn btn-primary btn-block" id="startScraping">Start crawling</button>
-                <button type="button" class="btn btn-default btn-block" id="stopScraping">Stop crawling</button>
-                <form class="btn-block" id="crawlDelays">
-                    <div class="input-group btn-block">
-                        <span class="input-group-addon">Min delay</span>
-                        <input id="crawlDelay" type="number" value="1" class="form-control"/>
-                        <span class="input-group-addon">sec</span>
-                    </div>
-                    <div class="input-group btn-block">
-                        <span class="input-group-addon">Max delay</span>
-                        <input id="maxWait" type="number" value="20" class="form-control"/>
-                        <span class="input-group-addon">sec</span>
-                    </div>
-                </form>
+                <div class="osd-row list-controls">
+                    <button type="button" class="osd-btn" id="wrongTable">Try another table</button>
+                    <span class="list-control">
+                        <label for="moreRows" class="osd-label">More rows</label>
+                        <select id="moreRows" class="osd-select">
+                            <option value="none">None</option>
+                            <option value="scroll">Scroll down</option>
+                            <option value="next">Next page button</option>
+                            <option value="loadMore">"Load more" button</option>
+                        </select>
+                    </span>
+                    <button type="button" class="osd-btn osd-btn-accent" id="locateButton" style="display: none;">Locate "Next" button</button>
+                    <span class="list-control" id="crawlDelays" style="display: none;">
+                        <label class="osd-inline-input">Min delay <input id="crawlDelay" type="number" value="1" class="osd-input osd-number"></label>
+                        <label class="osd-inline-input">Max delay <input id="maxWait" type="number" value="20" class="osd-input osd-number"></label>
+                        <span class="osd-hint osd-hint-inline">sec</span>
+                    </span>
+                    <button type="button" class="osd-btn osd-btn-primary" id="startScraping" style="display: none;">Start crawling</button>
+                    <button type="button" class="osd-btn osd-btn-danger" id="stopScraping" style="display: none;">Stop crawling</button>
+                </div>
+                <div id="info">
+                    <div class="osd-message osd-message-error" id="error" role="status" style="display: none;"></div>
+                    <div class="osd-message osd-message-success" id="pleaseRate" style="display: none !important;"></div>
+                    <div class="osd-message osd-message-warning" id="inputError" role="status" style="display: none;"></div>
+                    <div class="osd-message osd-message-warning" id="finished" role="status" style="display: none;"></div>
+                    <div class="osd-message osd-message-warning" id="previewLimit" role="status" style="display: none;"></div>
+                    <div class="osd-message" id="instructions" role="status" style="display: none;"></div>
+                </div>
+                <div class="osd-row osd-results-head list-results-head">
+                    <span class="osd-count" id="listRowCount"></span>
+                    <span id="help" class="list-badge"><span class="glyphicon glyphicon-info-sign"></span> Private Local Mode</span>
+                    <span class="osd-grow"></span>
+                    <button type="button" id="extractEachUrl" class="osd-btn osd-btn-accent extract-each-url" hidden>Extract each URL</button>
+                    <button type="button" class="osd-btn osd-btn-warning" id="resetColumns" title="Show the deleted columns again" style="display: none;">Reset columns</button>
+                    <button type="button" class="osd-btn osd-btn-success download-button" id="copy"><span class="glyphicon glyphicon-copy"></span> Copy</button>
+                    <button type="button" class="osd-btn osd-btn-success download-button" id="csv"><span class="glyphicon glyphicon-download-alt"></span> CSV</button>
+                    <button type="button" class="osd-btn osd-btn-success download-button" id="xlsx"><span class="glyphicon glyphicon-download-alt"></span> XLSX</button>
+                </div>
             </div>
-            <div class="col-xs-3">
-                <button type="button" class="btn btn-success download-button btn-block" id="csv">
-                    <span class="glyphicon glyphicon-download-alt"></span> CSV
-                </button>
-                <button type="button" class="btn btn-success download-button btn-block" id="xlsx">
-                    <span class="glyphicon glyphicon-download-alt"></span> XLSX
-                </button>
-                <button type="button" class="btn btn-success download-button btn-block" id="copy">
-                    <span class="glyphicon glyphicon-copy"></span> COPY ALL
-                </button>
-                <button type="button" class="btn btn-warning btn-block" id="resetColumns">Reset columns</button>
-            </div>
-            <div class="col-xs-4">
-                <span id="help" style="color: #777; font-size: 13px; font-weight: bold; display: block; margin-bottom: 5px;">
-                    <span class="glyphicon glyphicon-info-sign"></span> Private Local Mode
-                </span>
-                <div id="stats"></div>
-                <button type="button" id="extractEachUrl" class="extract-each-url" hidden>Extract each URL</button>
-            </div>
-            <div class="col-xs-12" id="info">
-                <div class="alert alert-danger" id="error"></div>
-                <div class="alert alert-success" id="pleaseRate" style="display:none !important;"></div>
-                <div class="alert alert-warning" id="inputError"></div>
-                <div class="alert alert-warning" id="finished"></div>
-                <div class="alert alert-warning" id="previewLimit"></div>
-                <div class="alert alert-info" id="instructions"></div>
-            </div>
-            <div class="col-xs-12">
+            <div class="list-hot-wrap">
                 <div id="hot" class="hot handsontable htRowHeaders htColumnHeaders"></div>
             </div>
         </div>

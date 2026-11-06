@@ -786,7 +786,20 @@
     }
 
     /**
-     * Updates the scraping information values displayed in the #stats container.
+     * Formats a duration as mm:ss, or hh:mm:ss from one hour.
+     * @param {number} ms - Duration.
+     * @returns {string} Formatted duration.
+     */
+    function formatDuration(ms) {
+        const total = Math.floor(ms / 1000);
+        const pad = n => String(n).padStart(2, "0");
+        const hours = Math.floor(total / 3600);
+        const rest = pad(Math.floor(total / 60) % 60) + ":" + pad(total % 60);
+        return hours ? pad(hours) + ":" + rest : rest;
+    }
+
+    /**
+     * Updates the counters of the #stats tiles.
      * "Load more" counts rounds (clicks that brought rows) instead of pages.
      * Speed: rows added by crawling (beyond the first read) per minute of working time,
      * leaving out the rows whose round was not timed (see crawlWithLoadMore).
@@ -795,14 +808,15 @@
         const byRound = getMoreRowsMode() === "loadMore";
         const addedRows = scrapingState.data.length - scrapingState.firstRows - scrapingState.uncountedRows;
         const speed = addedRows > 0 && scrapingState.workingTime > 0
-            ? (addedRows * 60000 / scrapingState.workingTime).toFixed(1) + " rows / min" : "\u2013";
-        $("#stats")
-            .empty()
-            .append($("<div>", { text: byRound ? "Rounds: " + scrapingState.loadRounds : "Pages scraped: " + scrapingState.pages }))
-            .append($("<div>", { text: "Rows collected: " + scrapingState.data.length }))
-            .append($("<div>", { text: (byRound ? "Rows from last round: " : "Rows from last page: ") + scrapingState.lastRows }))
-            .append($("<div>", { text: "Working time: " + parseInt(scrapingState.workingTime / 1000) + "s" }))
-            .append($("<div>", { text: "Speed: " + speed }));
+            ? (addedRows * 60000 / scrapingState.workingTime).toFixed(1) + " / min" : "–";
+        $("#listPages").text(byRound ? scrapingState.loadRounds : scrapingState.pages);
+        $("#listPagesLabel").text(byRound ? "rounds" : "pages");
+        $("#listRows").text(scrapingState.data.length);
+        $("#listLastRows").text(scrapingState.lastRows);
+        $("#listLastRowsLabel").text(byRound ? "from last round" : "from last page");
+        $("#listDuration").text(formatDuration(scrapingState.workingTime));
+        $("#listSpeed").text(speed);
+        $("#listRowCount").text(scrapingState.data.length + (scrapingState.data.length === 1 ? " row" : " rows"));
     }
 
     /**
@@ -963,8 +977,7 @@
         });
 
         // Controls and messages shown or hidden above the table move it down or up after
-        // it was drawn: draw it again to fit the window. The columns above it are floated,
-        // so each is watched (their container keeps no height of its own).
+        // it was drawn: draw it again to fit the window.
         const tableMoveObserver = new ResizeObserver(function() {
             if (!scrapingState.data || !$("#content").is(":visible")) return;
             if ($("#hot").get(0).getBoundingClientRect().y !== scrapingState.tableTop) renderHandsontable();
