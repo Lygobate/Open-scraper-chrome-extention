@@ -145,6 +145,8 @@
                 <div class="osd-menu-wrap">
                     <button type="button" class="osd-btn osd-btn-icon" id="detailsTemplateMenuButton" aria-haspopup="menu" aria-expanded="false" aria-controls="detailsTemplateMenu" aria-label="Template actions" title="Template actions">&#8943;</button>
                     <div class="osd-menu" id="detailsTemplateMenu" role="menu" hidden>
+                        <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateNew">New template</button>
+                        <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateDuplicate">Duplicate</button>
                         <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateRename">Rename</button>
                         <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateExport">Export as JSON</button>
                         <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateImport">Import from JSON</button>
@@ -170,6 +172,7 @@
                 <table class="osd-preview-table">
                     <tbody id="detailsPreviewBody"></tbody>
                 </table>
+                <p class="osd-preview-hint" id="detailsPreviewHint" hidden>Drag &#10303; or use &uarr; &darr; to change the column order.</p>
             </div>
             <div class="osd-actions">
                 <button type="button" class="osd-btn osd-btn-lg" id="detailsBackTo1">Back</button>

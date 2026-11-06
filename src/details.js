@@ -58,6 +58,8 @@
     const TEMPLATE_VERSION = 1;
     const DEFAULT_WAIT = { min: 2, max: 30 };
     const MAX_TEMPLATE_FIELDS = 200;
+    // Value of the "+ New template…" entry of the template drop-down
+    const NEW_TEMPLATE_VALUE = "__new__";
 
     // Labels that make a three-part registrable domain under a country code (example.co.uk)
     const SECOND_LEVEL_LABELS = new Set(["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gob", "nic", "ltd", "plc", "sch", "mil", "nom", "gouv", "asso"]);
@@ -85,7 +87,11 @@
         pickToken: 0,
         picks: [],
         pickTemplateId: "",
+        // Values read in the test page by field id, and the template they were read for
         previewValues: null,
+        previewTemplateId: "",
+        // Field being dragged in the fields list of step 2
+        dragFieldId: "",
         renaming: false,
         previewUrl: "",
         filledCounts: null,
@@ -188,7 +194,8 @@
         if (isBusy()) return step === state.step;
         if (step === 1) return true;
         if (step === 2) return state.validUrls.length > 0;
-        return state.validUrls.length > 0 && !!getSelectedTemplate();
+        const template = getSelectedTemplate();
+        return state.validUrls.length > 0 && !!template && template.fields.length > 0;
     }
 
     /**
@@ -831,7 +838,8 @@
             const name = typeof field.name === "string" && field.name.trim() ? field.name.trim().slice(0, 120) : KIND_LABELS[field.kind];
             fields.push({ id: id, name: name, kind: field.kind, selectors: selectors });
         });
-        if (!fields.length) return null;
+        // A template may have no field yet (just created), but not lose all of them on reading
+        if (!fields.length && raw.fields.length) return null;
         const renames = {};
         if (raw.renames && typeof raw.renames === "object") {
             Object.keys(raw.renames).forEach(key => {
@@ -870,7 +878,7 @@
                 createdAt: set && set.savedAt,
                 updatedAt: set && set.savedAt
             });
-            if (!template) return;
+            if (!template || !template.fields.length) return;
             let name = domain + " details";
             for (let n = 2; templates.some(t => t.domain === domain && t.name === name); n++) name = domain + " details (" + n + ")";
             template.name = name;
@@ -965,8 +973,14 @@
                 select.appendChild(option);
             });
         }
+        if (domain) {
+            const option = document.createElement("option");
+            option.value = NEW_TEMPLATE_VALUE;
+            option.textContent = "+ New template…";
+            select.appendChild(option);
+        }
         select.value = getSelectedTemplate() ? state.templateId : "";
-        select.disabled = isBusy() || !templates.length;
+        select.disabled = isBusy() || !domain;
         updateTemplateMenu();
     }
 
@@ -976,6 +990,8 @@
     function updateTemplateMenu() {
         const hasTemplate = !!getSelectedTemplate();
         $id("detailsTemplateMenuButton").disabled = isBusy();
+        $id("detailsTemplateNew").disabled = !getTestDomain();
+        $id("detailsTemplateDuplicate").disabled = !hasTemplate;
         $id("detailsTemplateRename").disabled = !hasTemplate;
         $id("detailsTemplateExport").disabled = !hasTemplate;
         $id("detailsTemplateDelete").disabled = !hasTemplate;
@@ -1005,16 +1021,18 @@
             stopRun();
             state.templateId = "";
             resetResults();
+            // Another template of the site, if any, takes the place of the deleted one
             if (state.step === 3) showStep(2);
+            else if (state.step === 2 && !chooseTemplateForDomain()) refreshPreview();
+        } else if (state.step === 3 && !canOpenStep(3)) {
+            // The template has no field left
+            showStep(2);
         }
         renderTemplateSelect();
         updateFieldsStepUi();
         const template = getSelectedTemplate();
-        if (state.step === 2 && template && !$id("detailsPreview").hidden) {
-            // Names may have changed (here, in the grid or in another window)
-            const values = state.previewValues && state.previewValues.length === template.fields.length ? state.previewValues : null;
-            if (values || !state.previewValues) renderPreviewRows(template, values);
-        }
+        // Names or order may have changed (here, in the grid or in another window)
+        if (state.step === 2 && template) redrawPreview();
         if (state.step === 3) renderRunHeader();
         rebuildGridIfNeeded();
     }
@@ -1044,21 +1062,62 @@
             showMessage("detailsPickMessage", "Nothing was selected.", "warning");
             return;
         }
+        const template = await addTemplate({ domain: domain, name: domain + " details", fields: fields });
+        if (template) showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
+    }
+
+    /**
+     * Saves a new template and selects it. Its name is made unique on its domain.
+     * @param {{domain: string, name: string, fields: Object[], wait: Object, renames: Object}} props -
+     *     Content of the template (wait and renames are optional).
+     * @returns {Promise<Object|null>} Saved template, or null when it could not be saved.
+     */
+    async function addTemplate(props) {
         const now = new Date().toISOString();
         const template = {
             id: createId("t"),
             version: TEMPLATE_VERSION,
-            domain: domain,
-            name: uniqueTemplateName(domain + " details", domain),
-            fields: fields,
-            wait: normalizeWait(DEFAULT_WAIT),
-            renames: {},
+            domain: props.domain,
+            name: "",
+            fields: props.fields,
+            wait: normalizeWait(props.wait || DEFAULT_WAIT),
+            renames: props.renames || {},
             createdAt: now,
             updatedAt: now
         };
-        if (!(await updateTemplates(templates => { templates.push(template); }))) return;
-        showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
+        const saved = await updateTemplates(templates => {
+            // The name must be unique among the latest stored templates
+            state.templates = templates;
+            template.name = uniqueTemplateName(String(props.name).slice(0, 120), template.domain);
+            templates.push(template);
+        });
+        if (!saved) return null;
         selectTemplate(template.id);
+        return template;
+    }
+
+    /**
+     * Asks for a name and creates an empty template for the test page's domain; its fields are
+     * then selected in the page.
+     */
+    function promptNewTemplate() {
+        const domain = getTestDomain();
+        if (!domain || isBusy()) return;
+        const base = domain + " details";
+        openPrompt("detailsTemplatePrompt", "New template", uniqueTemplateName(base, domain), "Create", async name => {
+            const template = await addTemplate({ domain: domain, name: name || base, fields: [] });
+            if (template) showMessage("detailsPickMessage", "Template \"" + template.name + "\" created. Click \"Select data to extract\" to add its fields.");
+        });
+    }
+
+    /**
+     * Copies a template (fields, wait and column names) into a new one named "<name> (copy)".
+     * @param {Object} template - Template to copy.
+     */
+    async function duplicateTemplate(template) {
+        const copy = JSON.parse(JSON.stringify(template));
+        const created = await addTemplate({ domain: copy.domain, name: copy.name + " (copy)", fields: copy.fields, wait: copy.wait, renames: copy.renames });
+        if (created) showMessage("detailsPickMessage", "Template \"" + template.name + "\" duplicated as \"" + created.name + "\".");
     }
 
     /**
@@ -1233,11 +1292,15 @@
 
     /**
      * Runs a template menu action.
-     * @param {"rename"|"export"|"import"|"delete"} action - Action.
+     * @param {"new"|"duplicate"|"rename"|"export"|"import"|"delete"} action - Action.
      */
     function onTemplateMenuAction(action) {
         closeTemplateMenu();
         const template = getSelectedTemplate();
+        if (action === "new") {
+            promptNewTemplate();
+            return;
+        }
         if (action === "import") {
             $id("detailsTemplateFile").value = "";
             $id("detailsTemplateFile").click();
@@ -1246,6 +1309,8 @@
         if (!template) return;
         if (action === "export") {
             exportTemplate();
+        } else if (action === "duplicate") {
+            duplicateTemplate(template);
         } else if (action === "rename") {
             openPrompt("detailsTemplatePrompt", "Name", template.name, "Save", name => {
                 if (!name) return;
@@ -1256,7 +1321,10 @@
                 updateTemplates(templates => {
                     const index = templates.findIndex(t => t.id === template.id);
                     if (index !== -1) templates.splice(index, 1);
-                }).then(onTemplatesChanged);
+                }).then(saved => {
+                    onTemplatesChanged();
+                    if (saved) showMessage("detailsPickMessage", "Template \"" + template.name + "\" deleted.");
+                });
             });
         }
     }
@@ -1296,15 +1364,17 @@
      */
     function updateFieldsStepUi() {
         const busy = isBusy();
+        const template = getSelectedTemplate();
+        const hasFields = !!template && template.fields.length > 0;
         $id("detailsPickStart").hidden = state.picking;
         $id("detailsPickStart").disabled = busy || !getTestUrl();
-        $id("detailsPickStart").classList.toggle("osd-btn-primary", !getSelectedTemplate());
-        $id("detailsEditFields").hidden = !getSelectedTemplate();
+        $id("detailsPickStart").classList.toggle("osd-btn-primary", !hasFields);
+        $id("detailsEditFields").hidden = !hasFields;
         $id("detailsEditFields").disabled = busy || !getTestUrl();
         $id("detailsPickStop").hidden = !state.picking;
         $id("detailsBackTo1").disabled = busy;
-        $id("detailsToStep3").disabled = busy || !getSelectedTemplate();
-        $id("detailsTemplate").disabled = busy || !getDomainTemplates(getTestDomain()).length;
+        $id("detailsToStep3").disabled = busy || !hasFields;
+        $id("detailsTemplate").disabled = busy || !getTestDomain();
         updateTestUrlUi();
         updateTemplateMenu();
         updateStepper();
@@ -1367,6 +1437,11 @@
         }
         box.hidden = false;
         state.previewUrl = "";
+        if (!template.fields.length) {
+            renderPreviewRows(template, {});
+            $id("detailsPreviewStatus").textContent = "No field yet";
+            return;
+        }
         renderPreviewRows(template, null);
         $id("detailsPreviewStatus").textContent = "Loading the test page…";
         const isCancelled = () => token !== state.previewToken;
@@ -1399,7 +1474,12 @@
             const complete = found === template.fields.length;
             $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found" +
                 (complete || waitMs ? "" : " · waiting for the others…");
-            renderPreviewRows(template, response.values);
+            // Kept by field id: the fields may be moved meanwhile
+            const values = {};
+            template.fields.forEach((field, i) => { values[field.id] = response.values[i] || ""; });
+            state.previewValues = values;
+            state.previewTemplateId = template.id;
+            redrawPreview();
             if (complete) return;
         }
     }
@@ -1431,20 +1511,65 @@
     }
 
     /**
-     * Draws the preview table: the URL column, then one row per field with its kind, column
-     * name (renamable), value read in the test page and a remove button. Not redrawn while a
-     * name is being edited (it is drawn again when the edit ends).
+     * Draws the preview again with the values already read, when they cover every field of the
+     * selected template (else it waits for the next read).
+     */
+    function redrawPreview() {
+        const template = getSelectedTemplate();
+        if (!template || $id("detailsPreview").hidden) return;
+        const values = state.previewValues;
+        const usable = !!values && state.previewTemplateId === template.id && template.fields.every(field => field.id in values);
+        if (usable || !values) renderPreviewRows(template, usable ? values : null);
+    }
+
+    /**
+     * Draws the preview table: the URL column, then one row per field with a drag handle, its
+     * kind, column name (renamable), value read in the test page, and buttons to move it up or
+     * down and to remove it. Not redrawn while a name is being edited or a field dragged (it is
+     * drawn again when that ends).
      * @param {Object} template - Template.
-     * @param {string[]|null} values - Values, or null while loading.
+     * @param {Object<string, string>|null} values - Values by field id, or null while loading.
      */
     function renderPreviewRows(template, values) {
         state.previewValues = values;
-        if (state.renaming) return;
+        state.previewTemplateId = template.id;
+        if (state.renaming || state.dragFieldId) return;
+        const busy = isBusy();
+        const count = template.fields.length;
         const body = $id("detailsPreviewBody");
         body.textContent = "";
+        $id("detailsPreviewHint").hidden = count < 2 || busy;
         const columns = getResultColumns(template);
-        const addRow = (kindKey, kindLabel, key, name, value, missing, field) => {
+        const addButton = (cell, text, title, label, disabled, onClick) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "osd-btn osd-btn-icon";
+            button.textContent = text;
+            button.title = title;
+            button.setAttribute("aria-label", label);
+            button.disabled = disabled;
+            button.addEventListener("click", onClick);
+            cell.appendChild(button);
+            return button;
+        };
+        const addRow = (kindKey, kindLabel, key, name, value, missing, field, index) => {
             const row = document.createElement("tr");
+            const handleCell = document.createElement("td");
+            handleCell.className = "osd-preview-handle";
+            if (field) {
+                row.dataset.fieldId = field.id;
+                if (count > 1 && !busy) {
+                    const handle = document.createElement("span");
+                    handle.className = "osd-drag-handle";
+                    handle.textContent = "⠿";
+                    handle.draggable = true;
+                    handle.title = "Drag to change the column order";
+                    handleCell.appendChild(handle);
+                }
+            } else {
+                handleCell.title = "The URL column stays first";
+            }
+
             const kindCell = document.createElement("td");
             kindCell.className = "osd-preview-kind";
             const kind = document.createElement("span");
@@ -1464,7 +1589,7 @@
             rename.textContent = "✎";
             rename.title = "Rename this column";
             rename.setAttribute("aria-label", "Rename column " + name);
-            rename.disabled = isBusy();
+            rename.disabled = busy;
             rename.addEventListener("click", () => startRename(nameCell, template.id, key, name));
             nameCell.append(nameText, rename);
 
@@ -1473,27 +1598,120 @@
             valueCell.textContent = values === null ? "…" : (missing ? "Not found" : value);
             valueCell.title = value;
 
-            const removeCell = document.createElement("td");
-            removeCell.className = "osd-preview-remove";
+            const actionsCell = document.createElement("td");
+            actionsCell.className = "osd-preview-actions";
             if (field) {
-                const remove = document.createElement("button");
-                remove.type = "button";
-                remove.className = "osd-btn osd-btn-icon";
-                remove.textContent = "×";
-                remove.title = "Remove this field from the template";
-                remove.setAttribute("aria-label", "Remove field " + name);
-                remove.disabled = template.fields.length < 2 || isBusy();
-                remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
-                removeCell.appendChild(remove);
+                addButton(actionsCell, "↑", "Move up", "Move " + name + " up", busy || index === 0,
+                    () => moveFieldByButton(template.id, field.id, -1)).dataset.move = "up";
+                addButton(actionsCell, "↓", "Move down", "Move " + name + " down", busy || index === count - 1,
+                    () => moveFieldByButton(template.id, field.id, 1)).dataset.move = "down";
+                addButton(actionsCell, "×", "Remove this field from the template", "Remove field " + name, busy,
+                    () => removeTemplateField(template.id, field.id)).classList.add("osd-remove");
             }
-            row.append(kindCell, nameCell, valueCell, removeCell);
+            row.append(handleCell, kindCell, nameCell, valueCell, actionsCell);
             body.appendChild(row);
         };
-        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null);
+        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null, -1);
         template.fields.forEach((field, index) => {
-            const value = values ? values[index] || "" : "";
-            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field);
+            const value = values ? values[field.id] || "" : "";
+            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field, index);
         });
+    }
+
+    /**
+     * Returns the fields in a new order, or null when the move changes nothing.
+     * @param {Object[]} fields - Fields of a template.
+     * @param {string} fieldId - Field to move.
+     * @param {{by: number}|{nextTo: string, after: boolean}} target - Places to move it by, or the
+     *     field to put it before or after.
+     * @returns {Object[]|null} Fields in their new order.
+     */
+    function reorderFields(fields, fieldId, target) {
+        const from = fields.findIndex(field => field.id === fieldId);
+        if (from === -1) return null;
+        const rest = fields.filter(field => field.id !== fieldId);
+        let to;
+        if (target.nextTo) {
+            const index = rest.findIndex(field => field.id === target.nextTo);
+            if (index === -1) return null;
+            to = index + (target.after ? 1 : 0);
+        } else {
+            to = Math.max(0, Math.min(rest.length, from + target.by));
+        }
+        if (to === from) return null;
+        rest.splice(to, 0, fields[from]);
+        return rest;
+    }
+
+    /**
+     * Moves a field of a template. The order of the fields is the order of the result columns
+     * (the URL column stays first): the preview, the grid and the exports follow it, and the
+     * results already extracted keep their values (they are stored by field id).
+     * @param {string} templateId - Template id.
+     * @param {string} fieldId - Field to move.
+     * @param {{by: number}|{nextTo: string, after: boolean}} target - See reorderFields.
+     * @returns {Promise<boolean>} True when the new order was saved.
+     */
+    async function moveTemplateField(templateId, fieldId, target) {
+        const template = state.templates.find(t => t.id === templateId);
+        if (!template || isBusy() || !reorderFields(template.fields, fieldId, target)) return false;
+        return updateTemplate(templateId, t => {
+            const fields = reorderFields(t.fields, fieldId, target);
+            if (fields) t.fields = fields;
+        });
+    }
+
+    /**
+     * Moves a field one place with its arrow button, then puts the focus back on that button
+     * (or on the other arrow once the field reached the end).
+     * @param {string} templateId - Template id.
+     * @param {string} fieldId - Field to move.
+     * @param {number} by - -1 (up) or 1 (down).
+     */
+    async function moveFieldByButton(templateId, fieldId, by) {
+        await moveTemplateField(templateId, fieldId, { by: by });
+        const row = $id("detailsPreviewBody").querySelector('tr[data-field-id="' + CSS.escape(fieldId) + '"]');
+        if (!row) return;
+        const same = row.querySelector('[data-move="' + (by < 0 ? "up" : "down") + '"]');
+        const other = row.querySelector('[data-move="' + (by < 0 ? "down" : "up") + '"]');
+        (same && !same.disabled ? same : other).focus();
+    }
+
+    /**
+     * Returns where a dragged field would be dropped: before or after the row under the pointer
+     * (on the URL row: before the first field).
+     * @param {DragEvent} event - Drag event in the fields list.
+     * @returns {{row: HTMLElement, nextTo: string, after: boolean, line: string}|null} Target and
+     *     the side of the row to mark.
+     */
+    function getDropTarget(event) {
+        const template = getSelectedTemplate();
+        const row = event.target instanceof Element ? event.target.closest("#detailsPreviewBody tr") : null;
+        if (!row || !template || !template.fields.length) return null;
+        if (!row.dataset.fieldId) return { row: row, nextTo: template.fields[0].id, after: false, line: "after" };
+        const box = row.getBoundingClientRect();
+        const after = event.clientY > box.top + box.height / 2;
+        return { row: row, nextTo: row.dataset.fieldId, after: after, line: after ? "after" : "before" };
+    }
+
+    /**
+     * Removes the drop line from the fields list.
+     */
+    function clearDropLine() {
+        $id("detailsPreviewBody").querySelectorAll(".is-drop-before, .is-drop-after").forEach(row => {
+            row.classList.remove("is-drop-before", "is-drop-after");
+        });
+    }
+
+    /**
+     * Ends dragging a field and draws the list again (it is not redrawn during the drag).
+     */
+    function endFieldDrag() {
+        if (!state.dragFieldId) return;
+        state.dragFieldId = "";
+        clearDropLine();
+        $id("detailsPreviewBody").querySelectorAll(".is-dragging").forEach(row => row.classList.remove("is-dragging"));
+        redrawPreview();
     }
 
     /**
@@ -1546,8 +1764,7 @@
                 showMessage("detailsPickMessage", "");
             }
             state.renaming = false;
-            const template = getSelectedTemplate();
-            if (template) renderPreviewRows(template, state.previewValues);
+            redrawPreview();
         };
         input.addEventListener("keydown", event => {
             if (event.key === "Enter") {
@@ -1565,13 +1782,12 @@
     }
 
     /**
-     * Removes a field from a template (a template keeps at least one field).
+     * Removes a field from a template.
      * @param {string} templateId - Template id.
      * @param {string} fieldId - Field id.
      */
     async function removeTemplateField(templateId, fieldId) {
         await updateTemplate(templateId, template => {
-            if (template.fields.length < 2) return;
             template.fields = template.fields.filter(field => field.id !== fieldId);
             delete template.renames[fieldId];
         });
@@ -1625,7 +1841,7 @@
             return;
         }
         connectSessionPort(started.doc);
-        showMessage("detailsPickMessage", editing ? "Fields of \"" + editing.name + "\" found in the page are green. Click more data to add, then click Finish." :
+        showMessage("detailsPickMessage", editing && editing.fields.length ? "Fields of \"" + editing.name + "\" found in the page are green. Click more data to add, then click Finish." :
             "Click the data to extract in the page, then click Finish.");
         pollPicks(token);
     }
@@ -1815,7 +2031,7 @@
         const finished = state.nextIndex >= state.urls.length && state.results.length > 0;
         toggle.textContent = state.running ? "Stop" : (finished ? "Restart" : "Start");
         toggle.classList.toggle("osd-btn-danger", state.running);
-        toggle.disabled = !state.running && (state.picking || !getSelectedTemplate() || !state.validUrls.length);
+        toggle.disabled = !state.running && (state.picking || !canOpenStep(3));
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
         ["detailsCsv", "detailsJson", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
@@ -1848,7 +2064,7 @@
             return;
         }
         const template = getSelectedTemplate();
-        if (!template || !state.validUrls.length) return;
+        if (!template || !template.fields.length || !state.validUrls.length) return;
         if (!(await getTargetTab())) {
             showMessage("detailsRunMessage", "The target tab was closed. Close this window and click the extension icon again.", "error");
             return;
@@ -2270,12 +2486,20 @@
 
     $id("detailsTestPrev").addEventListener("click", () => moveTestUrl(-1));
     $id("detailsTestNext").addEventListener("click", () => moveTestUrl(1));
-    $id("detailsTemplate").addEventListener("change", event => selectTemplate(event.target.value));
+    $id("detailsTemplate").addEventListener("change", event => {
+        if (event.target.value !== NEW_TEMPLATE_VALUE) {
+            selectTemplate(event.target.value);
+            return;
+        }
+        event.target.value = getSelectedTemplate() ? state.templateId : "";
+        promptNewTemplate();
+    });
     $id("detailsTemplateMenuButton").addEventListener("click", event => {
         event.stopPropagation();
         toggleTemplateMenu($id("detailsTemplateMenu").hidden);
     });
-    [["detailsTemplateRename", "rename"], ["detailsTemplateExport", "export"], ["detailsTemplateImport", "import"], ["detailsTemplateDelete", "delete"]]
+    [["detailsTemplateNew", "new"], ["detailsTemplateDuplicate", "duplicate"], ["detailsTemplateRename", "rename"],
+        ["detailsTemplateExport", "export"], ["detailsTemplateImport", "import"], ["detailsTemplateDelete", "delete"]]
         .forEach(([id, action]) => $id(id).addEventListener("click", () => onTemplateMenuAction(action)));
     document.addEventListener("click", event => {
         if (!$id("detailsTemplateMenu").hidden && !event.target.closest(".osd-menu-wrap")) closeTemplateMenu();
@@ -2290,9 +2514,50 @@
     $id("detailsTemplateFile").addEventListener("change", event => importTemplate(event.target.files[0]));
     $id("detailsTemplatePromptCancel").addEventListener("click", () => closePrompt("detailsTemplatePrompt"));
     $id("detailsColumnPromptCancel").addEventListener("click", () => closePrompt("detailsColumnPrompt"));
-    $id("detailsPickStart").addEventListener("click", () => startPicking("new"));
+    // An empty template selected gets the picks; otherwise they make a new template
+    $id("detailsPickStart").addEventListener("click", () => {
+        const template = getSelectedTemplate();
+        startPicking(template && !template.fields.length ? "edit" : "new");
+    });
     $id("detailsEditFields").addEventListener("click", () => startPicking("edit"));
     $id("detailsPickStop").addEventListener("click", finishPicking);
+
+    // Fields list: drag a field by its handle to change the column order
+    const previewBody = $id("detailsPreviewBody");
+    previewBody.addEventListener("dragstart", event => {
+        const handle = event.target instanceof Element ? event.target.closest(".osd-drag-handle") : null;
+        const row = handle && handle.closest("tr");
+        if (!row || !row.dataset.fieldId || isBusy() || state.renaming) {
+            event.preventDefault();
+            return;
+        }
+        state.dragFieldId = row.dataset.fieldId;
+        row.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", row.dataset.fieldId);
+        event.dataTransfer.setDragImage(row, 12, row.offsetHeight / 2);
+    });
+    previewBody.addEventListener("dragover", event => {
+        const target = state.dragFieldId ? getDropTarget(event) : null;
+        if (!target) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        clearDropLine();
+        target.row.classList.add("is-drop-" + target.line);
+    });
+    previewBody.addEventListener("dragleave", event => {
+        if (!(event.relatedTarget instanceof Node && previewBody.contains(event.relatedTarget))) clearDropLine();
+    });
+    previewBody.addEventListener("drop", event => {
+        const fieldId = state.dragFieldId;
+        const target = fieldId ? getDropTarget(event) : null;
+        if (!fieldId) return;
+        event.preventDefault();
+        const template = getSelectedTemplate();
+        endFieldDrag();
+        if (target && template) moveTemplateField(template.id, fieldId, target);
+    });
+    previewBody.addEventListener("dragend", endFieldDrag);
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
     $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
