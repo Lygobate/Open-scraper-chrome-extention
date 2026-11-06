@@ -202,15 +202,15 @@ form {
     border-color: var(--border-glass-hover);
 }
 
-/* -- Locate Next Button -- */
-#nextButton {
+/* -- Locate "Next" / "Load more" Button -- */
+#locateButton {
     background: var(--accent-teal-dim);
     border-color: rgba(6, 182, 212, 0.25);
     color: var(--accent-teal);
     font-weight: 500;
 }
 
-#nextButton:hover {
+#locateButton:hover {
     background: rgba(6, 182, 212, 0.2);
     border-color: rgba(6, 182, 212, 0.45);
     box-shadow: 0 0 12px rgba(6, 182, 212, 0.15);
@@ -249,30 +249,56 @@ form {
     border-color: rgba(245, 158, 11, 0.45);
 }
 
-/* === INFINITE SCROLL CHECKBOX === */
+/* === MORE ROWS DROP-DOWN === */
 
-#infinateScrollElement {
-    margin-left: 5px;
-    margin-top: 6px;
-    margin-bottom: 4px;
+.more-rows {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-sm);
+    margin: 6px 5px 4px;
 }
 
-#infinateScroll {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--accent-teal);
-    cursor: pointer;
-    border-radius: 3px;
-}
-
-#infinateScrollLabel {
+.more-rows-label {
+    flex: 0 0 auto;
+    margin: 0;
     font-size: 12px;
+    font-weight: 500;
     color: var(--text-secondary);
+}
+
+.more-rows-select {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 32px;
+    padding: 0 8px;
+    font-family: var(--font-family);
+    font-size: 13px;
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    user-select: none;
+    transition: border-color var(--transition-fast);
+}
+
+.more-rows-select:hover {
+    border-color: var(--border-glass-active);
+}
+
+.more-rows-select:focus {
+    outline: none;
+    border-color: var(--accent-teal);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15);
+}
+
+.more-rows-select:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.more-rows-select option {
+    background: var(--bg-surface);
+    color: var(--text-primary);
 }
 
 /* === FORM INPUTS (Min delay / Max delay) === */

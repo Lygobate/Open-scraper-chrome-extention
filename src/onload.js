@@ -28,19 +28,23 @@
      * This is used to detect repeating row-like elements that form a table structure.
      *
      * @param {Element} containerElement - The parent DOM element to inspect.
+     * @param {boolean} [ignoreOwnClasses=false] - Leave out the classes this extension adds
+     *   (row highlights), so that rows read before and rows added since count as alike.
      * @returns {{ children: jQuery, goodClasses: string[] }}
      *   An object containing:
      *   - `children`: jQuery collection of the best-matching child elements.
      *   - `goodClasses`: Array of the dominant class combinations found.
      */
-    function findRepeatingChildren(containerElement) {
+    function findRepeatingChildren(containerElement, ignoreOwnClasses) {
         var $children = $(containerElement).children();
         var classComboCounts = {};
         var individualClassCounts = {};
 
         $children.each(function() {
             if (!["script", "img", "meta", "style"].includes(this.nodeName.toLowerCase()) && $(this).text().trim().length) {
-                var sortedClasses = getElementClasses($(this)).sort();
+                var sortedClasses = getElementClasses($(this)).filter(function(cls) {
+                    return !ignoreOwnClasses || !isOwnClass(cls);
+                }).sort();
                 var comboKey = sortedClasses.join(" ");
                 comboKey in classComboCounts || (classComboCounts[comboKey] = 0);
                 classComboCounts[comboKey]++;
@@ -83,7 +87,7 @@
                 var matches = false;
                 var $this = $(this);
                 dominantCombos.forEach(function(combo) {
-                    matches |= hasAllClasses($this, combo);
+                    matches |= hasAllClasses($this, combo, ignoreOwnClasses);
                 });
                 return matches;
             }),
@@ -96,9 +100,18 @@
      *
      * @param {jQuery} $el - The jQuery element to check.
      * @param {string} classCombo - Space-separated list of class names.
+     * @param {boolean} [ignoreOwnClasses=false] - Leave out the classes this extension adds:
+     *   an empty combo then matches elements without any class of the page.
      * @returns {boolean} True if the element has all the specified classes.
      */
-    function hasAllClasses($el, classCombo) {
+    function hasAllClasses($el, classCombo, ignoreOwnClasses) {
+        if (ignoreOwnClasses) {
+            var pageClasses = getElementClasses($el).filter(function(cls) { return !isOwnClass(cls); });
+            var wanted = classCombo.split(" ").filter(Boolean);
+            return wanted.length
+                ? wanted.every(function(cls) { return pageClasses.indexOf(cls) !== -1; })
+                : !pageClasses.length;
+        }
         var classes = classCombo.split(" ");
         for (var i = 0; i < classes.length; i++) {
             if (!$el.hasClass(classes[i])) return false;
@@ -113,6 +126,12 @@
 
     /** @type {number} Index of the currently selected table in detectedTables */
     var currentTableIndex = 0;
+
+    /**
+     * @type {Element|null} Last row element of the list read so far: rows added after it by
+     * "Load more" are new, while a list drawn again by the page no longer holds it
+     */
+    var listLastRow = null;
 
     /**
      * Scans all elements on the page to detect candidates for data tables.
@@ -170,9 +189,6 @@
         $("*").removeClass("tablescraper-selected-table");
         $("*").removeClass("tablescraper-selected-row");
     }
-
-    // Event listener references (stored to allow removal)
-    var onElementClick, onElementMouseEnter;
 
     new Set;
 
@@ -233,6 +249,77 @@
         localStorage.setItem("visited", JSON.stringify(visited));
     }
 
+    // Marks this extension puts on a hovered or chosen button: kept out of the cell paths, so that
+    // a row holding the button reads the same whether the button is marked or not
+    var TRANSIENT_MARK_CLASSES = ["tablescraper-next-button", "tablescraper-hover"];
+
+    /**
+     * Reads the cells of rows: the text, href and src of each element, keyed by its path in the row.
+     * Rows without any value are left out.
+     *
+     * @param {jQuery} $rows - Row elements to read.
+     * @returns {Array<Object>} One object of cell values per row.
+     */
+    function extractRows($rows) {
+        var extractedRows = [];
+
+        $rows.each(function() {
+            var cellData = {};
+            var pathHistory = [];
+
+            /**
+             * Records a cell value under a given path key, handling duplicate path names
+             * by appending a numeric suffix.
+             *
+             * @param {string} value - The cell value to record.
+             * @param {string} pathKey - The base path key.
+             * @param {string} [suffix] - Optional suffix (e.g. "href", "src").
+             */
+            function recordCellValue(value, pathKey, suffix) {
+                if (value) {
+                    var fullKey = pathKey + (suffix ? " " + suffix : "");
+                    var displayKey = fullKey;
+                    var occurrences = 0;
+                    pathHistory.forEach(p => {
+                        p == pathKey && occurrences++;
+                    });
+                    if (occurrences > 1) displayKey = fullKey + " " + occurrences;
+                    cellData[displayKey] = value;
+                }
+            }
+
+            /**
+             * Recursively traverses a DOM node and its children,
+             * extracting text, href, and src values into cellData.
+             *
+             * @param {jQuery} $node - Current jQuery element.
+             * @param {string} parentPath - Accumulated path from the row root.
+             * @param {Element} rawNode - The raw DOM node.
+             */
+            !function traverseAndExtractNode($node, parentPath, rawNode) {
+                if (rawNode.nodeName) {
+                    var nodePath = parentPath + "/" + rawNode.nodeName.toLowerCase() + getElementClasses($node)
+                        .filter(cls => !TRANSIENT_MARK_CLASSES.includes(cls)).map(cls => "." + cls).join("");
+                    pathHistory.push(nodePath);
+                    recordCellValue(
+                        $node.clone().children().remove().end().text().trim(),
+                        nodePath
+                    );
+                    recordCellValue($node.prop("href"), nodePath, "href");
+                    recordCellValue($node.prop("src"), nodePath, "src");
+                    $node.children().each(function() {
+                        traverseAndExtractNode($(this), nodePath, this);
+                    });
+                } else {
+                    console.log("what???", rawNode);
+                }
+            }($(this), "", this);
+
+            if (Object.keys(cellData).length) extractedRows.push(cellData);
+        });
+        return extractedRows;
+    }
+
     /**
      * Extracts structured data from the currently selected table,
      * or from a specific table selector if provided.
@@ -276,64 +363,12 @@
 
         // Extract structured cell data from each row
         $rows = detectedTables[currentTableIndex].children;
-        var extractedRows = [];
-
-        $rows.each(function() {
-            var cellData = {};
-            var pathHistory = [];
-
-            /**
-             * Records a cell value under a given path key, handling duplicate path names
-             * by appending a numeric suffix.
-             *
-             * @param {string} value - The cell value to record.
-             * @param {string} pathKey - The base path key.
-             * @param {string} [suffix] - Optional suffix (e.g. "href", "src").
-             */
-            function recordCellValue(value, pathKey, suffix) {
-                if (value) {
-                    var fullKey = pathKey + (suffix ? " " + suffix : "");
-                    var displayKey = fullKey;
-                    var occurrences = 0;
-                    pathHistory.forEach(p => {
-                        p == pathKey && occurrences++;
-                    });
-                    if (occurrences > 1) displayKey = fullKey + " " + occurrences;
-                    cellData[displayKey] = value;
-                }
-            }
-
-            /**
-             * Recursively traverses a DOM node and its children,
-             * extracting text, href, and src values into cellData.
-             *
-             * @param {jQuery} $node - Current jQuery element.
-             * @param {string} parentPath - Accumulated path from the row root.
-             * @param {Element} rawNode - The raw DOM node.
-             */
-            !function traverseAndExtractNode($node, parentPath, rawNode) {
-                if (rawNode.nodeName) {
-                    var nodePath = parentPath + "/" + rawNode.nodeName.toLowerCase() + getElementClasses($node).map(cls => "." + cls).join("");
-                    pathHistory.push(nodePath);
-                    recordCellValue(
-                        $node.clone().children().remove().end().text().trim(),
-                        nodePath
-                    );
-                    recordCellValue($node.prop("href"), nodePath, "href");
-                    recordCellValue($node.prop("src"), nodePath, "src");
-                    $node.children().each(function() {
-                        traverseAndExtractNode($(this), nodePath, this);
-                    });
-                } else {
-                    console.log("what???", rawNode);
-                }
-            }($(this), "", this);
-
-            if (Object.keys(cellData).length) extractedRows.push(cellData);
-        });
+        var extractedRows = extractRows($rows);
+        listLastRow = $rows.last()[0] || null;
 
         sendResponse({
             data: extractedRows,
+            rowCount: $rows.length,
             tableId: currentTableIndex,
             tableSelector: detectedTables[currentTableIndex].selector,
             goodClasses: detectedTables[currentTableIndex].goodClasses
@@ -352,47 +387,119 @@
         return $(element).trigger("mouseleave").trigger("blur")
             .parents().addBack().not("html").not("body").map(function() {
                 var tag = this.tagName.toLowerCase();
+                // Classes this extension adds (highlights) are left out: they come and go
+                var pageClasses = typeof this.className === "string"
+                    ? this.className.trim().split(/\s+/).filter(function(cls) { return cls && !isOwnClass(cls); }).join(" ")
+                    : "";
                 if (typeof this.id === "string" && this.id.trim() && !this.id.match(/\d+/g)) {
                     tag += escapeCssSelectorPart(this.id, "#");
-                } else if (typeof this.className === "string" && this.className.trim()) {
-                    tag += escapeCssSelectorPart(this.className).replace(/\s+/g, ".");
+                } else if (pageClasses) {
+                    tag += escapeCssSelectorPart(pageClasses).replace(/\s+/g, ".");
                 }
                 return tag;
             }).get().join(">");
     }
 
+    // Elements that act as buttons by nature
+    var CLICKABLE_SELECTOR = "button, a[href], [role=button], [role=link], input[type=button], input[type=submit], summary";
+    // Pointer events kept from the page while a button is being picked, so that picking clicks nothing
+    var BUTTON_PICKER_EVENTS = ["click", "dblclick", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup"];
+
+    // Button picker in progress: {kind: "next" | "loadMore", sendResponse}, or null
+    var buttonPicker = null;
+
     /**
-     * Activates interactive "Next button" picking mode.
-     * Highlights elements on hover and captures the user's click
-     * to record the selector of the chosen "Next page" button.
+     * Returns the element that acts as a button for a clicked element: the closest button, link
+     * or role=button element, else the outermost element of its pointer-cursor block.
      *
+     * @param {Element} element - The clicked element.
+     * @returns {Element} The clickable element, or the clicked element itself.
+     */
+    function getClickableElement(element) {
+        var clickable = element.closest(CLICKABLE_SELECTOR);
+        if (clickable) return clickable;
+        if (getComputedStyle(element).cursor !== "pointer") return element;
+        // Children inherit the cursor: the block starts at the highest ancestor that still shows it
+        while (element.parentElement && element.parentElement !== document.body &&
+            getComputedStyle(element.parentElement).cursor === "pointer") {
+            element = element.parentElement;
+        }
+        return element;
+    }
+
+    /**
+     * Returns the element a pick on `target` would choose for the active picker.
+     *
+     * @param {Element} target - Element under the pointer.
+     * @returns {Element} The "Next" target as is, or the clickable element of a "Load more" pick.
+     */
+    function getPickedButton(target) {
+        return buttonPicker && buttonPicker.kind === "loadMore" ? getClickableElement(target) : target;
+    }
+
+    /**
+     * Highlights the element the selector of the hovered button would find.
+     *
+     * @param {MouseEvent} event - The mouseover event.
+     */
+    function onButtonPickerHover(event) {
+        if (!buttonPicker || !(event.target instanceof Element)) return;
+        $(".tablescraper-hover").removeClass("tablescraper-hover");
+        $(buildCssSelectorForElement(getPickedButton(event.target))).last().addClass("tablescraper-hover");
+    }
+
+    /**
+     * Keeps pointer events from the page while picking, and picks the clicked button.
+     *
+     * @param {MouseEvent} event - A pointer event from the user.
+     */
+    function onButtonPickerEvent(event) {
+        if (!buttonPicker || !event.isTrusted) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (event.type !== "click" || !(event.target instanceof Element)) return;
+        var element = getPickedButton(event.target);
+        var sendResponse = buttonPicker.sendResponse;
+        buttonPicker.sendResponse = null;
+        stopButtonPicker();
+        $(".tablescraper-next-button").removeClass("tablescraper-next-button");
+        var selector = buildCssSelectorForElement(element);
+        $(element).addClass("tablescraper-next-button");
+        console.log("Button selector:", selector);
+        sendResponse({ selector: selector });
+    }
+
+    /**
+     * Activates interactive button picking mode: highlights elements on hover and captures
+     * the user's next click to record the selector of the chosen button. A picker already
+     * active is cancelled first. The page gets none of the picking clicks.
+     *
+     * @param {string} kind - "next" for a "Next page" button, "loadMore" for a "Load more" button.
      * @param {Function} sendResponse - Chrome message callback to return the chosen selector.
      */
-    function activateNextButtonPickingMode(sendResponse) {
+    function activateNextButtonPickingMode(kind, sendResponse) {
+        stopButtonPicker();
         window.focus();
+        buttonPicker = { kind: kind, sendResponse: sendResponse };
+        window.addEventListener("mouseover", onButtonPickerHover, true);
+        BUTTON_PICKER_EVENTS.forEach(function(type) {
+            window.addEventListener(type, onButtonPickerEvent, true);
+        });
+    }
 
-        onElementMouseEnter = function(event) {
-            $(this).is($(event.target)) && (
-                $("*").removeClass("tablescraper-hover"),
-                $(buildCssSelectorForElement(this)).last().addClass("tablescraper-hover")
-            );
-        };
-
-        onElementClick = function(event) {
-            event.preventDefault();
-            (function captureClickedElement(clickEvent) {
-                $("*").off("click", onElementClick).off("mouseenter", onElementMouseEnter);
-                $(".tablescraper-hover").removeClass("tablescraper-hover");
-                $(".tablescraper-next-button").removeClass("tablescraper-next-button");
-                var selector = buildCssSelectorForElement(clickEvent.target);
-                $(clickEvent.target).addClass("tablescraper-next-button");
-                console.log("Next button selector:", selector);
-                sendResponse({ selector: selector });
-            })(event);
-            return false;
-        };
-
-        $("*").click(onElementClick).on("mouseenter", onElementMouseEnter);
+    /**
+     * Ends button picking mode, if active. A pick still awaited is answered as cancelled.
+     */
+    function stopButtonPicker() {
+        if (!buttonPicker) return;
+        var sendResponse = buttonPicker.sendResponse;
+        buttonPicker = null;
+        window.removeEventListener("mouseover", onButtonPickerHover, true);
+        BUTTON_PICKER_EVENTS.forEach(function(type) {
+            window.removeEventListener(type, onButtonPickerEvent, true);
+        });
+        $(".tablescraper-hover").removeClass("tablescraper-hover");
+        if (sendResponse) sendResponse({ cancelled: true });
     }
 
     /**
@@ -419,7 +526,7 @@
             return sendResponse({});
         }
 
-        $("*").off("click", onElementClick).off("mouseenter", onElementMouseEnter);
+        stopButtonPicker();
 
         setTimeout(function() {
             sendResponse({});
@@ -435,6 +542,217 @@
                 targetElement.dispatchEvent(mouseup);
             })($button.last()[0]);
         }, 100);
+    }
+
+    // --- "Load more" button: click it and read the rows it adds to the list ---
+
+    // Interval between two looks for the rows a "Load more" click adds
+    var LOAD_MORE_POLL_MS = 500;
+    // Longest wait for a "Load more" button the page draws again late after a load
+    var LOAD_MORE_BUTTON_WAIT_MS = 2000;
+    // Interval between two looks for that button
+    var LOAD_MORE_BUTTON_POLL_MS = 250;
+
+    /**
+     * Waits for a while.
+     *
+     * @param {number} ms - Time to wait in milliseconds.
+     * @returns {Promise<void>} Resolved after the wait.
+     */
+    function wait(ms) {
+        return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+
+    /**
+     * Tells whether an element is in the page and shown: not detached, not of zero size,
+     * not hidden by display or visibility.
+     *
+     * @param {Element} element - The element.
+     * @returns {boolean} True when the element is shown.
+     */
+    function isElementShown(element) {
+        if (!element.isConnected) return false;
+        var rect = element.getBoundingClientRect();
+        if (!rect.width || !rect.height) return false;
+        var style = getComputedStyle(element);
+        return style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse";
+    }
+
+    /**
+     * Tells whether a button is disabled, natively or through aria-disabled.
+     *
+     * @param {Element} element - The button.
+     * @returns {boolean} True when disabled.
+     */
+    function isElementDisabled(element) {
+        return element.disabled === true || element.getAttribute("aria-disabled") === "true";
+    }
+
+    /**
+     * Finds the "Load more" button by its selector. Like findElementBySelector, the leading
+     * parts of the selector are dropped while nothing matches, but only while what is left
+     * still names a class or an id: a bare "button" would find any other button.
+     * Among several matches, the last shown one is chosen.
+     *
+     * @param {string} selector - CSS selector of the button.
+     * @returns {Element|null} The button, or null when the page no longer has it.
+     */
+    function findLoadMoreButton(selector) {
+        for (; selector && /[.#]/.test(selector); selector = selector.split(">").slice(1).join(">")) {
+            var $matches = $(selector);
+            if ($matches.length) {
+                var $shown = $matches.filter(function() { return isElementShown(this); });
+                return ($shown.length ? $shown : $matches).last()[0];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Looks for the "Load more" button until it is shown and enabled, or the time is up.
+     *
+     * @param {string} selector - CSS selector of the button.
+     * @param {number} timeoutMs - Longest wait in milliseconds.
+     * @returns {Promise<{button: (Element|null), state: string}>} The button and its state:
+     *     "ready", "disabled" or "missing" (not found or hidden).
+     */
+    async function waitForLoadMoreButton(selector, timeoutMs) {
+        var deadline = Date.now() + timeoutMs;
+        for (;;) {
+            var button = findLoadMoreButton(selector);
+            var state = !button || !isElementShown(button) ? "missing" : isElementDisabled(button) ? "disabled" : "ready";
+            if (state === "ready" || Date.now() >= deadline) return { button: button, state: state };
+            await wait(LOAD_MORE_BUTTON_POLL_MS);
+        }
+    }
+
+    /**
+     * Clicks an element the way a script would. Elements that are not HTML elements (SVG)
+     * have no click(): they get a bubbling click event.
+     *
+     * @param {Element} element - The element to click.
+     */
+    function clickElement(element) {
+        if (element instanceof HTMLElement) {
+            element.click();
+        } else {
+            element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        }
+    }
+
+    /**
+     * Finds the list and its rows as they are now in the page.
+     *
+     * @param {string} tableSelector - CSS selector of the list.
+     * @returns {{$table: jQuery, rowInfo: {children: jQuery, goodClasses: string[]}}|null}
+     *     The list and its rows, or null when the list is gone.
+     */
+    function readListRows(tableSelector) {
+        var $table = findElementBySelector(tableSelector);
+        return $table ? { $table: $table, rowInfo: findRepeatingChildren($table, true) } : null;
+    }
+
+    /**
+     * One round of "Load more": when the list has no rows unread yet, clicks the button
+     * and waits for Min delay and, at the same time, for new rows (at most Max delay).
+     * Then reads the new rows. The page keeps the rows already read, so only the rows after
+     * them are read; when the page has drawn the list again, all rows are sent, flagged so
+     * that the window drops those it already has.
+     *
+     * Answers {status: "rows", data, rowCount, appended}, or {status} with "missing" (button
+     * not found or hidden), "disabled" (button disabled: all loaded) or "noRows" (the click
+     * added no rows in time), or {error}.
+     *
+     * @param {Object} message - {selector, tableSelector, rowCount, minWait, maxWait}: button and
+     *     list selectors, number of list rows read so far, delays in milliseconds.
+     * @param {Function} sendResponse - Chrome message callback.
+     */
+    async function loadMoreRows(message, sendResponse) {
+        var getRows = function() {
+            var read = readListRows(message.tableSelector);
+            return read ? read.rowInfo.children : $();
+        };
+        var hasNewRows = function($rows) {
+            return $rows.length !== message.rowCount || $rows.last()[0] !== listLastRow;
+        };
+
+        if (!hasNewRows(getRows())) {
+            var found = await waitForLoadMoreButton(message.selector, Math.min(message.maxWait, LOAD_MORE_BUTTON_WAIT_MS));
+            if (found.state !== "ready") {
+                return void sendResponse({ status: found.state });
+            }
+            $(".tablescraper-next-button").removeClass("tablescraper-next-button");
+            $(found.button).addClass("tablescraper-next-button");
+            found.button.scrollIntoView({ block: "center", behavior: "instant" });
+            clickElement(found.button);
+
+            // New rows count once their number holds for one look (pages may add them in steps)
+            var waitForNewRows = async function() {
+                var deadline = Date.now() + message.maxWait;
+                var previousCount = -1;
+                while (Date.now() < deadline) {
+                    await wait(LOAD_MORE_POLL_MS);
+                    var $rows = getRows();
+                    if (!hasNewRows($rows)) {
+                        previousCount = -1;
+                    } else if ($rows.length === previousCount) {
+                        return;
+                    } else {
+                        previousCount = $rows.length;
+                    }
+                }
+            };
+            await Promise.all([wait(message.minWait), waitForNewRows()]);
+        }
+
+        var read = readListRows(message.tableSelector);
+        if (!read) {
+            return void sendResponse({ error: "Table not found" });
+        }
+        var $rows = read.rowInfo.children;
+        if (!hasNewRows($rows)) {
+            return void sendResponse({ status: "noRows" });
+        }
+        var appended = !!listLastRow && $rows.index(listLastRow) === message.rowCount - 1;
+        var $newRows = appended ? $rows.slice(message.rowCount) : $rows;
+
+        // Highlight the rows like the other reads do: the highlight class is part of the cell paths
+        detectedTables.length || (detectedTables = [{}]);
+        detectedTables[currentTableIndex].table = read.$table;
+        detectedTables[currentTableIndex].children = $rows;
+        detectedTables[currentTableIndex].goodClasses = read.rowInfo.goodClasses;
+        highlightSelectedTable();
+        listLastRow = $rows.last()[0] || null;
+
+        sendResponse({
+            status: "rows",
+            data: extractRows($newRows),
+            rowCount: $rows.length,
+            appended: appended
+        });
+    }
+
+    /**
+     * Marks the chosen "Next" or "Load more" button in the page, after removing any former mark.
+     *
+     * @param {string|null} selector - CSS selector of the button; none only removes the mark.
+     * @param {string} kind - "next" or "loadMore".
+     * @param {Function} sendResponse - Chrome message callback, given {error} when not found.
+     */
+    function markButton(selector, kind, sendResponse) {
+        $(".tablescraper-next-button").removeClass("tablescraper-next-button");
+        if (!selector) {
+            return sendResponse({});
+        }
+        if (kind !== "loadMore") {
+            return clickNextButton(selector, sendResponse, true);
+        }
+        var button = findLoadMoreButton(selector);
+        if (!button) {
+            return sendResponse({ error: "Load more button not found", errorId: "error" });
+        }
+        $(button).addClass("tablescraper-next-button");
+        sendResponse({});
     }
 
     // --- Page details extraction: highlight layer, field picker and per-page extraction ---
@@ -2281,7 +2599,13 @@
         }
 
         if ("getNextButton" === message.action) {
-            activateNextButtonPickingMode(sendResponse);
+            activateNextButtonPickingMode(message.kind || "next", sendResponse);
+            return true;
+        }
+
+        if ("stopButtonPicker" === message.action) {
+            stopButtonPicker();
+            sendResponse({});
             return true;
         }
 
@@ -2370,8 +2694,13 @@
             return true;
         }
 
-        if ("markNextButton" === message.action) {
-            clickNextButton(message.selector, sendResponse, true);
+        if ("markButton" === message.action) {
+            markButton(message.selector, message.kind, sendResponse);
+            return true;
+        }
+
+        if ("loadMore" === message.action) {
+            loadMoreRows(message, sendResponse);
             return true;
         }
 
