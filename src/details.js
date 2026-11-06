@@ -635,16 +635,37 @@
     }
 
     /**
-     * Brings the target tab and its window to the front.
+     * Brings the target tab and its window to the front. A minimized window is restored
+     * first: focusing it alone leaves it in the Dock on macOS.
+     * @returns {Promise<{ok: boolean, error: string}>} Result, with the reason when it failed.
      */
     async function focusTargetTab() {
         const tab = await getTargetTab();
-        if (!tab) return;
+        if (!tab) return { ok: false, error: "closed" };
         try {
             await chromeInstance.tabs.update(targetTabId, { active: true });
-            await chromeInstance.windows.update(tab.windowId, { focused: true });
+            const win = await chromeInstance.windows.get(tab.windowId);
+            const change = { focused: true };
+            if (win.state === "minimized") change.state = "normal";
+            await chromeInstance.windows.update(tab.windowId, change);
+            return { ok: true, error: "" };
         } catch (error) {
             console.warn("Unable to focus the target tab:", error);
+            return { ok: false, error: String(error && error.message || error) };
+        }
+    }
+
+    /**
+     * "Go to tab" button: brings the scraped tab to the front, or says why it cannot.
+     */
+    async function goToTargetTab() {
+        const result = await focusTargetTab();
+        if (result.ok) {
+            showMessage("detailsTabMessage", "");
+        } else if (result.error === "closed") {
+            showMessage("detailsTabMessage", "The scraped tab was closed. Open the page again and click the extension icon there.", "error");
+        } else {
+            showMessage("detailsTabMessage", "Unable to bring the scraped tab to the front: " + result.error, "error");
         }
     }
 
@@ -1998,7 +2019,7 @@
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
     $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
-    $id("detailsShowTab").addEventListener("click", focusTargetTab);
+    $id("detailsShowTab").addEventListener("click", goToTargetTab);
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
     $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
