@@ -451,6 +451,8 @@
     // content (alt, title, aria-label: often the product name) are left out: on another page
     // they miss, or match another element that shows the sample's content (related items).
     var DESCRIPTIVE_ATTRIBUTES = ["itemprop", "role", "name", "placeholder", "type"];
+    // A class made of a word and a small number ("note2", "col-6") names a role, not a build
+    var NUMBERED_CLASS_PATTERN = /^[a-zA-Z][a-zA-Z_-]*[a-zA-Z][-_]?\d{1,2}$/;
     var MAX_FIELD_SELECTORS = 3;
     var MAX_ANCESTOR_DEPTH = 6;
     var MAX_SELECTOR_TRIES = 1000;
@@ -839,29 +841,35 @@
     }
 
     /**
-     * Tells whether a class looks stable across pages: no digits, not a state, not generated.
+     * Tells whether a class looks stable across pages: no digits (or a word and a small
+     * number), not a state, not generated.
      * @param {string} className - Class name.
      * @returns {boolean} True for a stable class.
      */
     function isStableClass(className) {
-        return className.length > 1 && className.length <= 40 && !/\d/.test(className) &&
+        return className.length > 1 && className.length <= 40 && (!/\d/.test(className) || NUMBERED_CLASS_PATTERN.test(className)) &&
             /^[a-zA-Z_-][\w-]*$/.test(className) && !isOwnClass(className) &&
             !STATE_CLASS_PATTERN.test(className) && !GENERATED_CLASS_PATTERN.test(className);
     }
 
     /**
-     * Tells whether an id looks like a word: no digits and few changes between lower case,
-     * upper case and other characters (generated ids switch often).
+     * Tells whether an id looks like a word: no digits and few changes between lower case and
+     * upper case inside its parts (generated ids switch often). "-" and "_" only separate parts,
+     * so "corePrice_feature_div" is a word-like id.
      * @param {string} id - Element id.
      * @returns {boolean} True for a meaningful id.
      */
     function isWordLikeId(id) {
-        if (!id || id.length > 40 || /\d/.test(id)) return false;
+        if (!id || id.length > 40 || /\d/.test(id) || !/^[a-zA-Z_-]+$/.test(id)) return false;
         var changes = 0;
         var previous = null;
         for (var i = 0; i < id.length; i++) {
             var ch = id[i];
-            var type = ch >= "a" && ch <= "z" ? "lower" : (ch >= "A" && ch <= "Z" ? "upper" : "other");
+            if (ch === "-" || ch === "_") {
+                previous = null;
+                continue;
+            }
+            var type = ch >= "a" && ch <= "z" ? "lower" : "upper";
             if (previous && type !== previous) changes++;
             previous = type;
         }
@@ -919,11 +927,13 @@
             add("#" + escapeCssIdentifier(element.id), 2);
         }
 
-        // Rank 3: stable classes, alone then by pairs
+        // Rank 3: stable classes, alone then by pairs; aria-hidden, which marks the visible
+        // copy of a value whose full text is kept for screen readers (common, so weak alone)
         var classes = Array.prototype.filter.call(element.classList, isStableClass).slice(0, 4);
         classes.forEach(function(className) {
             add(tag + "." + escapeCssIdentifier(className), 3);
         });
+        if (element.getAttribute("aria-hidden") === "true") add(tag + buildAttributeSelector("aria-hidden", "true"), 3);
         for (var i = 0; i < classes.length; i++) {
             for (var j = i + 1; j < classes.length; j++) {
                 add(tag + "." + escapeCssIdentifier(classes[i]) + "." + escapeCssIdentifier(classes[j]), 3);
