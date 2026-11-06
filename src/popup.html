@@ -167,7 +167,10 @@
             <div class="osd-preview" id="detailsPreview" hidden>
                 <div class="osd-preview-head">
                     <span>Preview of the test page</span>
-                    <span class="osd-count" id="detailsPreviewStatus"></span>
+                    <span class="osd-preview-status">
+                        <span class="osd-count" id="detailsPreviewStatus"></span>
+                        <button type="button" class="osd-btn osd-btn-icon osd-preview-reload" id="detailsPreviewReload" aria-label="Reload the values" title="Reload the values: scrolls through the test page to load all its content, then reads the fields again."><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.6 1.6v3.2H9.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </span>
                 </div>
                 <table class="osd-preview-table">
                     <tbody id="detailsPreviewBody"></tbody>
@@ -193,18 +196,43 @@
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsExtracted">0</span><span class="osd-counter-label">extracted</span></div>
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsRemaining">0</span><span class="osd-counter-label">remaining</span></div>
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsDuration">00:00</span><span class="osd-counter-label">duration</span></div>
+                <div class="osd-counter" title="Pages per minute: rows added divided by the run time"><span class="osd-counter-value" id="detailsSpeed">–</span><span class="osd-counter-label">speed</span></div>
             </div>
             <details class="osd-options" id="detailsOptions">
-                <summary>Options</summary>
-                <div class="osd-row">
-                    <span class="osd-label">Page load wait</span>
-                    <label class="osd-inline-input">Min <input type="number" id="detailsMinWait" class="osd-input osd-number" min="0" step="1" value="2"></label>
-                    <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="1" value="30"></label>
-                    <span class="osd-hint osd-hint-inline">seconds</span>
+                <summary>
+                    <span class="osd-options-chevron" aria-hidden="true"></span>
+                    <span class="osd-options-title">Options</span>
+                    <span class="osd-options-summary" id="detailsOptionsSummary">Wait 2–30 s · Load full page: off</span>
+                </summary>
+                <div class="osd-options-body">
+                    <div class="osd-row">
+                        <span class="osd-label">Page load wait</span>
+                        <label class="osd-inline-input">Min <input type="number" id="detailsMinWait" class="osd-input osd-number" min="0" step="1" value="2"></label>
+                        <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="1" value="30"></label>
+                        <span class="osd-hint osd-hint-inline">seconds</span>
+                    </div>
+                    <p class="osd-hint">Each page is read as soon as it shows the fields, but not before Min seconds: raise Min for pages that show their content late. Max is the longest a page can take.</p>
+                    <div class="osd-row">
+                        <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">
+                            <input type="checkbox" role="switch" id="detailsFullPage" aria-describedby="detailsFullPageInfo">
+                            <span class="osd-switch-track" aria-hidden="true"></span>
+                            <span class="osd-switch-label">Load full page</span>
+                        </label>
+                        <span class="osd-info" id="detailsFullPageInfo" tabindex="0" role="note" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer." aria-label="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">i</span>
+                    </div>
+                    <p class="osd-hint">Saved in the template.</p>
                 </div>
-                <p class="osd-hint">Each page is read as soon as it shows the fields, but not before Min seconds: raise Min for pages that show their content late. Max is the longest a page can take. Saved in the template.</p>
             </details>
-            <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
+            <div class="osd-run-buttons">
+                <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
+                <button type="button" class="osd-btn osd-btn-reset" id="detailsReset" title="Delete the extracted rows and start again from the first URL"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4M6.6 6.5v4.5M9.4 6.5v4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Reset</button>
+            </div>
+            <form class="osd-prompt osd-prompt-question" id="detailsResetPrompt" hidden>
+                <label class="osd-prompt-label" for="detailsResetPromptInput"></label>
+                <input type="text" id="detailsResetPromptInput" class="osd-input" hidden>
+                <button type="submit" class="osd-btn osd-btn-danger">Reset</button>
+                <button type="button" class="osd-btn" id="detailsResetPromptCancel">Cancel</button>
+            </form>
             <div class="osd-message" id="detailsRunMessage" role="status" hidden></div>
             </div>
             <div class="osd-row osd-results-head">

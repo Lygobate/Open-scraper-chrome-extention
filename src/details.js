@@ -105,6 +105,8 @@
         runId: 0,
         resolveStop: null,
         elapsedMs: 0,
+        // Speed shown, set when a row is added ("" before the first one)
+        speed: "",
         runStartedAt: 0,
         ticker: 0,
         grid: null,
@@ -115,6 +117,10 @@
         previewDoc: "",
         pageWatchTimer: 0,
         previewLoading: false,
+        // A preview read is under way (the reload button is off)
+        previewReading: false,
+        // The last preview read the page shown in the tab rather than the test page
+        previewShownPage: false,
         promptAction: null,
         columnPromptAction: null,
         waitSaveTimer: 0
@@ -857,6 +863,8 @@
             name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 120) : "Template",
             fields: fields,
             wait: normalizeWait(raw.wait),
+            // "Load full page": off for templates saved before it existed
+            fullPage: raw.fullPage === true,
             renames: renames,
             createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,
             updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : now
@@ -1007,7 +1015,7 @@
         state.templateId = templateId;
         if (changed) resetResults();
         const template = getSelectedTemplate();
-        if (template) applyWaitToInputs(template.wait);
+        if (template) applyOptionsToInputs(template);
         renderTemplateSelect();
         updateFieldsStepUi();
         refreshPreview();
@@ -1068,8 +1076,8 @@
 
     /**
      * Saves a new template and selects it. Its name is made unique on its domain.
-     * @param {{domain: string, name: string, fields: Object[], wait: Object, renames: Object}} props -
-     *     Content of the template (wait and renames are optional).
+     * @param {{domain: string, name: string, fields: Object[], wait: Object, fullPage: boolean, renames: Object}} props -
+     *     Content of the template (wait, fullPage and renames are optional).
      * @returns {Promise<Object|null>} Saved template, or null when it could not be saved.
      */
     async function addTemplate(props) {
@@ -1081,6 +1089,7 @@
             name: "",
             fields: props.fields,
             wait: normalizeWait(props.wait || DEFAULT_WAIT),
+            fullPage: props.fullPage === true,
             renames: props.renames || {},
             createdAt: now,
             updatedAt: now
@@ -1111,12 +1120,13 @@
     }
 
     /**
-     * Copies a template (fields, wait and column names) into a new one named "<name> (copy)".
+     * Copies a template (fields, options and column names) into a new one named "<name> (copy)".
      * @param {Object} template - Template to copy.
      */
     async function duplicateTemplate(template) {
         const copy = JSON.parse(JSON.stringify(template));
-        const created = await addTemplate({ domain: copy.domain, name: copy.name + " (copy)", fields: copy.fields, wait: copy.wait, renames: copy.renames });
+        const created = await addTemplate({ domain: copy.domain, name: copy.name + " (copy)", fields: copy.fields, wait: copy.wait,
+            fullPage: copy.fullPage, renames: copy.renames });
         if (created) showMessage("detailsPickMessage", "Template \"" + template.name + "\" duplicated as \"" + created.name + "\".");
     }
 
@@ -1200,6 +1210,7 @@
                 domain: template.domain,
                 fields: template.fields,
                 wait: template.wait,
+                fullPage: template.fullPage,
                 renames: template.renames,
                 createdAt: template.createdAt,
                 updatedAt: template.updatedAt
@@ -1375,9 +1386,27 @@
         $id("detailsBackTo1").disabled = busy;
         $id("detailsToStep3").disabled = busy || !hasFields;
         $id("detailsTemplate").disabled = busy || !getTestDomain();
+        updatePreviewReloadUi();
         updateTestUrlUi();
         updateTemplateMenu();
         updateStepper();
+    }
+
+    /**
+     * Turns the preview's reload button off while picking, running or reading.
+     */
+    function updatePreviewReloadUi() {
+        const template = getSelectedTemplate();
+        $id("detailsPreviewReload").disabled = isBusy() || state.previewReading || !template || !template.fields.length;
+    }
+
+    /**
+     * Reads the test page again after scrolling through it, whatever "Load full page" says
+     * (content that only loads once scrolled to).
+     */
+    function reloadPreview() {
+        if (isBusy() || state.previewReading) return;
+        refreshPreview({ shownPage: state.previewShownPage, fullPage: true });
     }
 
     /**
@@ -1423,12 +1452,33 @@
 
     /**
      * Loads the test page if needed, reads one row (at once, then again once late fields show)
-     * and highlights in the page the elements found.
-     * @param {{shownPage: boolean}} [options] - shownPage: read the page shown in the tab as it
-     *     is (the user opened another page of the site there) instead of the test page.
+     * and highlights in the page the elements found. The reload button is off meanwhile.
+     * @param {{shownPage: boolean, fullPage: boolean}} [options] - shownPage: read the page
+     *     shown in the tab as it is (the user opened another page of the site there) instead of
+     *     the test page; fullPage: scroll through the page first even when the template's "Load
+     *     full page" is off (reload button).
      */
     async function refreshPreview(options) {
         const token = ++state.previewToken;
+        state.previewReading = true;
+        state.previewShownPage = !!(options && options.shownPage);
+        updatePreviewReloadUi();
+        try {
+            await readPreview(token, options);
+        } finally {
+            if (token === state.previewToken) {
+                state.previewReading = false;
+                updatePreviewReloadUi();
+            }
+        }
+    }
+
+    /**
+     * Reads the preview for refreshPreview.
+     * @param {number} token - Preview token: a newer preview cancels this one.
+     * @param {{shownPage: boolean, fullPage: boolean}} [options] - See refreshPreview.
+     */
+    async function readPreview(token, options) {
         const template = getSelectedTemplate();
         const box = $id("detailsPreview");
         if (!template || state.step !== 2) {
@@ -1459,9 +1509,14 @@
         }
         $id("detailsPreviewStatus").textContent = "Reading…";
         const fields = template.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
+        // With "Load full page" (or the reload button), the first read scrolls through the page
+        // first, like a run
+        const scrollFirst = template.fullPage || !!(options && options.fullPage);
         // Read at once, then, if fields are missing, again once they show (or the wait ends)
         for (const waitMs of [0, LATE_FIELDS_WAIT_MS]) {
-            const response = await sendToTab({ action: "detailsPreview", fields: fields, waitMs: waitMs });
+            const fullPage = scrollFirst && !waitMs;
+            const response = await sendToTab({ action: "detailsPreview", fields: fields, waitMs: waitMs,
+                fullPage: fullPage, limitMs: fullPage ? Math.max(1, template.wait.max) * 1000 : 0 });
             if (isCancelled()) return;
             if (!response || !Array.isArray(response.values)) {
                 $id("detailsPreviewStatus").textContent = "The test page does not answer";
@@ -1885,13 +1940,34 @@
     // --- Step 3: run ---
 
     /**
-     * Shows the wait bounds of a template in the inputs.
-     * @param {{min: number, max: number}} wait - Bounds in seconds.
+     * Shows the options of a template (wait bounds, "Load full page") in the inputs.
+     * @param {{wait: Object, fullPage: boolean}} template - Template.
      */
-    function applyWaitToInputs(wait) {
-        const bounds = normalizeWait(wait);
+    function applyOptionsToInputs(template) {
+        const bounds = normalizeWait(template.wait);
         $id("detailsMinWait").value = String(bounds.min);
         $id("detailsMaxWait").value = String(bounds.max);
+        $id("detailsFullPage").checked = template.fullPage === true;
+        updateOptionsSummary();
+    }
+
+    /**
+     * Writes the options in the header of the closed options panel ("Wait 2–30 s · Load full page: off").
+     */
+    function updateOptionsSummary() {
+        const wait = getWait();
+        $id("detailsOptionsSummary").textContent = "Wait " + (wait.min === wait.max ? wait.min : wait.min + "–" + wait.max) +
+            " s · Load full page: " + ($id("detailsFullPage").checked ? "on" : "off");
+    }
+
+    /**
+     * Saves the "Load full page" switch in the template.
+     */
+    function onFullPageChanged() {
+        const on = $id("detailsFullPage").checked;
+        updateOptionsSummary();
+        const template = getSelectedTemplate();
+        if (template) updateTemplate(template.id, t => { t.fullPage = on; });
     }
 
     /**
@@ -1918,6 +1994,7 @@
         }
         minInput.value = String(min);
         maxInput.value = String(max);
+        updateOptionsSummary();
         const template = getSelectedTemplate();
         if (!template) return;
         clearTimeout(state.waitSaveTimer);
@@ -1935,6 +2012,7 @@
         state.extracted = 0;
         state.failed = 0;
         state.elapsedMs = 0;
+        state.speed = "";
         showMessage("detailsRunMessage", "");
         rebuildGridIfNeeded(true);
         updateRunUi();
@@ -1945,7 +2023,7 @@
      */
     function onExtractStepShown() {
         const template = getSelectedTemplate();
-        if (template) applyWaitToInputs(template.wait);
+        if (template) applyOptionsToInputs(template);
         renderRunHeader();
         updateRunUi();
         rebuildGridIfNeeded(true);
@@ -1982,6 +2060,15 @@
     }
 
     /**
+     * Works out the speed shown once a row is added: rows per minute of run time (the time
+     * while stopped does not count, as in the duration).
+     */
+    function updateSpeed() {
+        const minutes = getElapsedMs() / 60000;
+        state.speed = minutes > 0 ? (state.results.length / minutes).toFixed(1) + " / min" : "";
+    }
+
+    /**
      * Counts the valid URLs not visited yet.
      * @returns {number} Remaining pages.
      */
@@ -1996,15 +2083,41 @@
         $id("detailsExtracted").textContent = String(state.extracted);
         $id("detailsRemaining").textContent = String(getRemaining());
         $id("detailsDuration").textContent = formatDuration(getElapsedMs());
+        $id("detailsSpeed").textContent = state.speed || "–";
         const toggle = $id("detailsRunToggle");
         const finished = state.nextIndex >= state.urls.length && state.results.length > 0;
         toggle.textContent = state.running ? "Stop" : (finished ? "Restart" : "Start");
         toggle.classList.toggle("osd-btn-danger", state.running);
         toggle.disabled = !state.running && (state.picking || !canOpenStep(3));
+        $id("detailsReset").disabled = isBusy() || !hasRunProgress();
+        if ($id("detailsReset").disabled) closePrompt("detailsResetPrompt");
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
         ["detailsCsv", "detailsJson", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
         if (!count) showMessage("detailsExportMessage", "");
+    }
+
+    /**
+     * Tells whether the run has anything to reset: rows, time spent, or pages visited.
+     * @returns {boolean} True when Reset has something to clear.
+     */
+    function hasRunProgress() {
+        return state.results.length > 0 || state.nextIndex > 0 || state.elapsedMs > 0;
+    }
+
+    /**
+     * Asks before deleting the rows of the run; on Reset, the next Start begins with the first
+     * URL. The template, the URLs, the options and the column order stay as they are.
+     */
+    function askResetRun() {
+        if (isBusy() || !hasRunProgress()) return;
+        const count = state.results.length;
+        openPrompt("detailsResetPrompt", count ? "Delete the " + plural(count, "extracted row") + " and start again from the first URL?" :
+            "Start again from the first URL?", null, "Reset", () => {
+            if (isBusy()) return;
+            resetResults();
+            showMessage("detailsRunMessage", "Results deleted. Start begins with the first URL.", "info");
+        });
     }
 
     /**
@@ -2015,7 +2128,7 @@
         $id("tabList").disabled = state.running;
         $id("tabDetails").disabled = state.running;
         document.querySelectorAll(".osd-seg[data-source]").forEach(button => { button.disabled = busy; });
-        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinWait", "detailsMaxWait", "detailsToStep2"].forEach(id => {
+        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinWait", "detailsMaxWait", "detailsFullPage", "detailsToStep2"].forEach(id => {
             $id(id).disabled = busy || (id === "detailsToStep2" && !state.validUrls.length);
         });
         renderTemplateSelect();
@@ -2028,6 +2141,7 @@
      */
     async function startRun() {
         if (isBusy()) return;
+        closePrompt("detailsResetPrompt");
         if (isListCrawlRunning()) {
             showMessage("detailsRunMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
             return;
@@ -2059,8 +2173,10 @@
             const row = { url: state.urls[index], values: {}, failed: false };
             if (isUsableUrl(url)) {
                 // The page takes at least Min seconds and at most about Max seconds. It is read
-                // once parsed: the content script waits for Min and for the fields drawn late.
+                // once parsed: the content script waits for Min and for the fields drawn late,
+                // after scrolling through the page with "Load full page".
                 const wait = getWait();
+                const fullPage = $id("detailsFullPage").checked;
                 const pageStart = Date.now();
                 const limitMs = Math.max(1, wait.max) * 1000;
                 const minEnd = pageStart + wait.min * 1000;
@@ -2074,7 +2190,7 @@
                     const awaited = learned.map(field => field.late || field.absentPages < ABSENT_FIELD_PAGES ||
                         field.skippedPages >= ABSENT_FIELD_RECHECK_PAGES);
                     response = await Promise.race([
-                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, awaited: awaited,
+                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, awaited: awaited, fullPage: fullPage,
                             notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: LATE_FIELDS_WAIT_MS,
                             limitMs: Math.max(0, pageStart + limitMs - Date.now()) }, 2000, isStopped),
                         stopped.then(() => undefined)
@@ -2097,6 +2213,7 @@
             }
             state.results.push(row);
             state.nextIndex = index + 1;
+            updateSpeed();
             appendGridRow(row);
             updateRunUi();
         }
@@ -2478,11 +2595,14 @@
             closeTemplateMenu();
             closePrompt("detailsTemplatePrompt");
             closePrompt("detailsColumnPrompt");
+            closePrompt("detailsResetPrompt");
         }
     });
     $id("detailsTemplateFile").addEventListener("change", event => importTemplate(event.target.files[0]));
     $id("detailsTemplatePromptCancel").addEventListener("click", () => closePrompt("detailsTemplatePrompt"));
     $id("detailsColumnPromptCancel").addEventListener("click", () => closePrompt("detailsColumnPrompt"));
+    $id("detailsResetPromptCancel").addEventListener("click", () => closePrompt("detailsResetPrompt"));
+    $id("detailsReset").addEventListener("click", askResetRun);
     // An empty template selected gets the picks; otherwise they make a new template
     $id("detailsPickStart").addEventListener("click", () => {
         const template = getSelectedTemplate();
@@ -2528,10 +2648,12 @@
     });
     previewBody.addEventListener("dragend", endFieldDrag);
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
+    $id("detailsPreviewReload").addEventListener("click", reloadPreview);
     $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
     $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
+    $id("detailsFullPage").addEventListener("change", onFullPageChanged);
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
     ["mousedown", "click"].forEach(type => $id("detailsHot").addEventListener(type, onGridHeaderAction, true));
 
