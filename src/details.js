@@ -23,6 +23,12 @@
     const LATE_FIELDS_WAIT_MS = 5000;
     // Longest wait for the page shown to tell which document it is, before a run opens the next URL
     const OLD_DOCUMENT_PING_MS = 500;
+    // A field found empty after the full wait on this many pages in a row, and never drawn late
+    // during the run, stops holding the next pages up (it is still read when a page shows it at
+    // once or before Min ends). It is waited for again on one page after every
+    // ABSENT_FIELD_RECHECK_PAGES pages, and for good once seen drawn late.
+    const ABSENT_FIELD_PAGES = 3;
+    const ABSENT_FIELD_RECHECK_PAGES = 10;
     // Space kept under the results grid (paddings of the panel and of the step), and the delay
     // before the grid follows a change of the window size
     const GRID_BOTTOM_SPACE = 36;
@@ -1849,6 +1855,8 @@
         const stopped = new Promise(resolve => { state.resolveStop = resolve; });
         const isStopped = () => runId !== state.runId;
         const fields = template.fields.map(field => ({ id: field.id, kind: field.kind, selectors: field.selectors }));
+        // What the run learns of each field (see ABSENT_FIELD_PAGES)
+        const learned = fields.map(() => ({ absentPages: 0, skippedPages: 0, late: false }));
         state.running = true;
         state.runStartedAt = Date.now();
         state.ticker = setInterval(updateRunUi, 1000);
@@ -1873,13 +1881,16 @@
                 if (isStopped()) return;
                 let response;
                 if (ready) {
+                    const awaited = learned.map(field => field.late || field.absentPages < ABSENT_FIELD_PAGES ||
+                        field.skippedPages >= ABSENT_FIELD_RECHECK_PAGES);
                     response = await Promise.race([
-                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true,
+                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, awaited: awaited,
                             notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: LATE_FIELDS_WAIT_MS,
                             limitMs: Math.max(0, pageStart + limitMs - Date.now()) }, 2000, isStopped),
                         stopped.then(() => undefined)
                     ]);
                     if (isStopped()) return;
+                    if (response && response.ok && Array.isArray(response.values)) learnFields(learned, awaited, response);
                 }
                 if (Date.now() < minEnd) {
                     // Error page or no answer: the page still takes Min seconds
@@ -1901,6 +1912,29 @@
         }
         finishRun(runId, state.failed ? plural(state.failed, "page") +
             " could not be read (error page, time limit or no answer): only the URL is in the row." : "Done.", state.failed ? "warning" : "info");
+    }
+
+    /**
+     * Notes, after a page of a run, which fields showed late and which stayed absent after the
+     * full wait (see ABSENT_FIELD_PAGES).
+     * @param {Array<{absentPages: number, skippedPages: number, late: boolean}>} learned - Per
+     *     field, updated in place.
+     * @param {boolean[]} awaited - Per field, whether the page waited for it.
+     * @param {{values: Array, complete: boolean, late: boolean[]}} response - Page answer.
+     */
+    function learnFields(learned, awaited, response) {
+        learned.forEach((field, i) => {
+            if (response.late && response.late[i]) {
+                field.late = true;
+                field.absentPages = 0;
+            } else if (awaited[i]) {
+                if (response.values[i]) field.absentPages = 0;
+                else if (!response.complete) field.absentPages++;
+                field.skippedPages = 0;
+            } else {
+                field.skippedPages++;
+            }
+        });
     }
 
     /**

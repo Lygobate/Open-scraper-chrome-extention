@@ -2007,7 +2007,7 @@
      * Waits until a page visited by a run can be read, watching it from the moment it is
      * parsed (it may still be loading images, frames or ads):
      * - never before notBeforeMs (the Min wait of the run), unless limitMs comes first;
-     * - every field has a value: read at once when the page has loaded, else once the
+     * - every awaited field has a value: read at once when the page has loaded, else once the
      *   values have not changed for FIELD_STABLE_MS;
      * - a field still missing is waited for until the page has loaded, then until it has not
      *   changed for FIELD_QUIET_MS or lateMs have passed, both counted from the end of the Min
@@ -2015,10 +2015,12 @@
      *   it had loaded and Min had passed);
      * - never beyond limitMs (the Max limit of the run).
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
-     * @param {{notBeforeMs: number, lateMs: number, limitMs: number}} options - Times in
-     *     milliseconds from now.
-     * @returns {Promise<{values: string[], complete: boolean}>} Values; complete when every
-     *     field has one.
+     * @param {{notBeforeMs: number, lateMs: number, limitMs: number, awaited: boolean[]}} options -
+     *     Times in milliseconds from now; awaited tells, per field, whether a missing value holds
+     *     the page up (all of them when not given).
+     * @returns {Promise<{values: string[], complete: boolean, late: boolean[]}>} Values; complete
+     *     when every awaited field has one; late, per field, when its value only showed after the
+     *     first check.
      */
     function waitForRunFields(fields, options) {
         var started = Date.now();
@@ -2026,8 +2028,10 @@
         var limitMs = Number(options.limitMs);
         var hardEnd = started + (limitMs >= 0 ? limitMs : 30000);
         var lateMs = Math.max(0, Number(options.lateMs) || 0);
+        var awaited = fields.map(function(field, i) { return !Array.isArray(options.awaited) || options.awaited[i] !== false; });
         var readValues = function() { return extractPageDetails(fields); };
         var values = readValues();
+        var missingAtStart = values.map(function(value) { return !value; });
         var valuesKey = JSON.stringify(values);
         var valuesChangedAt = started;
         var lastChange = started;
@@ -2047,7 +2051,11 @@
                 clearTimeout(wake);
                 window.removeEventListener("load", onLoad);
                 values = readValues();
-                resolve({ values: values, complete: complete });
+                resolve({
+                    values: values,
+                    complete: complete,
+                    late: values.map(function(value, i) { return !!value && missingAtStart[i]; })
+                });
             };
             var check = function(changedAt) {
                 if (done) return;
@@ -2059,7 +2067,7 @@
                     valuesKey = key;
                     valuesChangedAt = now;
                 }
-                var complete = values.every(function(value) { return !!value; });
+                var complete = values.every(function(value, i) { return !awaited[i] || !!value; });
                 if (now >= hardEnd) return finish(complete);
                 // Next moment a rule can end the wait without any change of the page
                 var next = hardEnd;
@@ -2211,7 +2219,7 @@
                         var started = Date.now();
                         waitForRunFields(fields, message).then(function(result) {
                             sendResponse({ ok: true, status: status, url: window.location.href, values: result.values,
-                                complete: result.complete, waitedMs: Date.now() - started });
+                                complete: result.complete, late: result.late, waitedMs: Date.now() - started });
                         }).catch(function(e) {
                             sendResponse({ error: String(e && e.message || e) });
                         });
