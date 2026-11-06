@@ -472,6 +472,9 @@
     var LABEL_VALUE_LENGTH = 200;
     // Boxes are placed again at this interval while shown, for pages that move on their own
     var BOX_REFRESH_MS = 500;
+    // Interval between two looks for the template's fields not found yet in the page, while
+    // the picker shows them to edit the template
+    var EXISTING_FIELDS_CHECK_MS = 400;
     // Pixels scrolled per wheel "line" (wheels that report lines instead of pixels)
     var WHEEL_LINE_PX = 40;
 
@@ -1718,20 +1721,35 @@
 
     /**
      * Shows the fields a template already has as selected (green) when they are found in the
-     * page, and keeps them from being added again.
+     * page, and keeps them from being added again. Fields not found yet (pages that draw their
+     * content late, or after a scroll) are looked for again while the picker is on.
      * @param {Array<{kind: string, selectors: string[]}>} [fields] - Fields of the template.
      */
     function markExistingFields(fields) {
-        (Array.isArray(fields) ? fields : []).forEach(function(field) {
+        fieldPicker.pendingFields = (Array.isArray(fields) ? fields : []).slice();
+        markPendingFields();
+        if (fieldPicker.pendingFields.length) {
+            fieldPicker.pendingTimer = setInterval(markPendingFields, EXISTING_FIELDS_CHECK_MS);
+        }
+    }
+
+    /**
+     * Marks the existing fields that are now found in the page (see markExistingFields).
+     */
+    function markPendingFields() {
+        if (!fieldPicker) return;
+        fieldPicker.pendingFields = fieldPicker.pendingFields.filter(function(field) {
             var element = resolveField(field).element;
-            if (!element) return;
+            if (!element) return true;
             var kinds = fieldPicker.pickedKinds.get(element) || [];
             if (kinds.indexOf(field.kind) === -1) kinds.push(field.kind);
             fieldPicker.pickedKinds.set(element, kinds);
             if (!layerBoxes.some(function(entry) { return entry.kind === "picked" && entry.element === element; })) {
                 addLayerBox(element, "picked", field);
             }
+            return false;
         });
+        if (!fieldPicker.pendingFields.length) clearInterval(fieldPicker.pendingTimer);
     }
 
     /**
@@ -1758,6 +1776,8 @@
             hoverBox: null,
             moveFrame: 0,
             scrollFrame: 0,
+            pendingFields: [],
+            pendingTimer: 0,
             pickedKinds: new Map(),
             port: null
         };
@@ -1780,6 +1800,7 @@
         window.removeEventListener("wheel", onPickerWheel, { capture: true, passive: false });
         document.removeEventListener("scroll", onPickerScroll, true);
         cancelAnimationFrame(fieldPicker.scrollFrame);
+        clearInterval(fieldPicker.pendingTimer);
         if (layer) {
             onLayerEvent(layer.catcher, "mousemove", onPickerPointerMove, true);
             onLayerEvent(layer.catcher, "click", onPickerClick, true);
@@ -1977,12 +1998,13 @@
                 (function(fields) {
                     waitForFields(fields, message.waitMs, true).then(function() {
                         try {
+                            // The picker may have been turned on meanwhile: its boxes stay alone
                             sendResponse({
                                 ok: true,
                                 url: window.location.href,
                                 doc: DOCUMENT_TOKEN,
                                 values: extractPageDetails(fields),
-                                found: message.highlight === false ? [] : highlightFields(fields)
+                                found: message.highlight === false || fieldPicker ? [] : highlightFields(fields)
                             });
                         } catch (e) {
                             sendResponse({ error: String(e && e.message || e) });
