@@ -301,7 +301,8 @@ body.mode-details .details-panel {
 .osd-btn-block {
     display: flex;
     width: 100%;
-    margin-top: 12px;
+    max-width: 360px;
+    margin: 12px auto 0;
 }
 
 .osd-btn-primary {
@@ -784,6 +785,11 @@ body.mode-details .details-panel {
     border-radius: 50%;
 }
 
+.osd-hot-wrap {
+    width: 100%;
+    min-width: 0;
+}
+
 .osd-hot {
     margin-top: 8px;
     overflow: hidden;
@@ -817,4 +823,15 @@ body.mode-details .details-panel {
 .osd-hot .osd-col-action:hover {
     opacity: 1;
     border-color: currentColor;
+}
+
+/* === WIDTHS: steps 1 and 2 and the run controls sit in a centred column; the results
+   grid of step 3 uses the whole window === */
+.osd-stepper,
+#detailsStep1,
+#detailsStep2,
+.osd-run-top {
+    max-width: 880px;
+    margin-left: auto;
+    margin-right: auto;
 }

@@ -21,6 +21,10 @@
     // yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
     // every field are read at once.
     const LATE_FIELDS_WAIT_MS = 5000;
+    // Space kept under the results grid (paddings of the panel and of the step), and the delay
+    // before the grid follows a change of the window size
+    const GRID_BOTTOM_SPACE = 36;
+    const GRID_FIT_DELAY_MS = 100;
     // How long "show in page" highlights a field
     const SHOW_FIELD_MS = 1000;
 
@@ -69,6 +73,8 @@
         pickToken: 0,
         picks: [],
         emptyCounts: null,
+        gridSize: null,
+        gridFitTimer: 0,
         results: [],
         nextIndex: 0,
         extracted: 0,
@@ -106,6 +112,8 @@
         el.hidden = !text;
         el.classList.toggle("osd-message-warning", level === "warning");
         el.classList.toggle("osd-message-error", level === "error");
+        // A message above the results grid moves it down
+        if (state.grid) scheduleGridFit();
     }
 
     // --- Tabs and steps ---
@@ -1741,13 +1749,41 @@
     }
 
     /**
-     * Returns the height available for the grid in the window.
-     * @returns {number} Height in pixels.
+     * Returns the size available for the grid: the full width of its box and the height left
+     * down to the bottom of the window.
+     * @returns {{width: number, height: number}} Size in pixels.
      */
-    function getGridHeight() {
-        const container = $id("detailsHot");
-        const top = container.getBoundingClientRect().top;
-        return Math.max(160, window.innerHeight - top - 16);
+    function getGridSize() {
+        const wrap = $id("detailsHotWrap");
+        const top = wrap.getBoundingClientRect().top;
+        return { width: Math.max(200, wrap.clientWidth), height: Math.max(160, Math.floor(window.innerHeight - top - GRID_BOTTOM_SPACE)) };
+    }
+
+    /**
+     * Fits the grid to the space available, keeping its data, selection and scroll position.
+     */
+    function fitGrid() {
+        state.gridFitTimer = 0;
+        if (!state.grid || state.step !== 3 || !document.body.classList.contains(DETAILS_MODE_CLASS)) return;
+        const size = getGridSize();
+        if (state.gridSize && state.gridSize.width === size.width && state.gridSize.height === size.height) return;
+        const holder = $id("detailsHot").querySelector(".ht_master .wtHolder");
+        const left = holder ? holder.scrollLeft : 0;
+        const top = holder ? holder.scrollTop : 0;
+        state.gridSize = size;
+        state.grid.updateSettings({ width: size.width, height: size.height });
+        if (holder) {
+            holder.scrollLeft = left;
+            holder.scrollTop = top;
+        }
+    }
+
+    /**
+     * Fits the grid on the next frames, once (window resized, a message shown above it...).
+     */
+    function scheduleGridFit() {
+        if (state.gridFitTimer) return;
+        state.gridFitTimer = setTimeout(fitGrid, GRID_FIT_DELAY_MS);
     }
 
     /**
@@ -1770,6 +1806,8 @@
             return;
         }
         const columns = getResultColumns(template);
+        const size = getGridSize();
+        state.gridSize = size;
         state.gridData = state.results.map(result => toGridRow(template, result));
         state.grid = new Handsontable(container, {
             data: state.gridData,
@@ -1790,8 +1828,9 @@
             readOnly: true,
             wordWrap: false,
             manualColumnResize: true,
-            width: container.clientWidth,
-            height: getGridHeight(),
+            width: size.width,
+            height: size.height,
+            stretchH: "all",
             colWidths: columns.map((_, col) => (col === 0 ? 220 : 160))
         });
     }
@@ -1977,11 +2016,8 @@
         onTemplatesChanged();
     });
 
-    window.addEventListener("resize", () => {
-        if (state.grid && state.step === 3) {
-            state.grid.updateSettings({ width: $id("detailsHot").clientWidth, height: getGridHeight() });
-        }
-    });
+    window.addEventListener("resize", scheduleGridFit);
+    $id("detailsOptions").addEventListener("toggle", scheduleGridFit);
 
     // The window holds the results in memory only: confirm before closing it during a run
     window.addEventListener("beforeunload", event => {

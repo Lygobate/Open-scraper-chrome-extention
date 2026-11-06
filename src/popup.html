@@ -194,6 +194,7 @@
                 <span class="osd-grow"></span>
                 <button type="button" class="osd-btn" id="detailsShowTab">Show page</button>
             </div>
+            <div class="osd-run-top">
             <div class="osd-counters">
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsExtracted">0</span><span class="osd-counter-label">extracted</span></div>
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsRemaining">0</span><span class="osd-counter-label">remaining</span></div>
@@ -211,6 +212,7 @@
             </details>
             <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
             <div class="osd-message" id="detailsRunMessage" role="status" hidden></div>
+            </div>
             <div class="osd-row osd-results-head">
                 <span class="osd-count" id="detailsResultCount"></span>
                 <span class="osd-count osd-empty-stats" id="detailsEmptyStats" hidden></span>
@@ -227,7 +229,7 @@
                 <button type="button" class="osd-btn" id="detailsColumnPromptCancel">Cancel</button>
             </form>
             <div class="osd-message" id="detailsExportMessage" role="status" hidden></div>
-            <div id="detailsHot" class="osd-hot"></div>
+            <div class="osd-hot-wrap" id="detailsHotWrap"><div id="detailsHot" class="osd-hot"></div></div>
         </section>
     </div>
 
