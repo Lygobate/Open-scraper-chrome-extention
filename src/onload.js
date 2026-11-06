@@ -1836,6 +1836,9 @@
     var MAX_FIELD_MATCHES = 20;
     // Interval between two checks of the fields while waiting for a page to show them
     var FIELD_CHECK_MS = 150;
+    // While fields are missing, the wait ends early once the page has not changed for this long
+    // (a page still drawing keeps changing; a field that is simply not on the page never comes)
+    var FIELD_QUIET_MS = 1500;
 
     /**
      * Finds the element and value of a field. The first match of each selector is tried in
@@ -1883,8 +1886,8 @@
 
     /**
      * Waits until every field has a value (pages that draw their content late), watching the
-     * page's changes, or until the time runs out. A page that already shows every field
-     * answers at once.
+     * page's changes, until the time runs out or the page stops changing for FIELD_QUIET_MS.
+     * A page that already shows every field answers at once.
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
      * @param {number} timeoutMs - Longest wait.
      * @returns {Promise<boolean>} True when every field has a value.
@@ -1907,12 +1910,22 @@
                 clearTimeout(scheduled);
                 resolve(found);
             };
+            var lastChange = Date.now();
             var check = function() {
                 scheduled = 0;
-                if (!done && allFound()) finish(true);
+                if (done) return;
+                if (allFound()) finish(true);
+                else if (Date.now() - lastChange >= FIELD_QUIET_MS) finish(false);
             };
-            // Checks at most once per interval, however many changes the page makes
-            var observer = new MutationObserver(function() {
+            // Checks at most once per interval, however many changes the page makes. What this
+            // extension draws does not count as a change of the page.
+            var observer = new MutationObserver(function(records) {
+                var own = layer && records.every(function(record) {
+                    return record.target === layer.host || Array.prototype.indexOf.call(record.addedNodes, layer.host) !== -1 ||
+                        Array.prototype.indexOf.call(record.removedNodes, layer.host) !== -1;
+                });
+                if (own) return;
+                lastChange = Date.now();
                 if (!scheduled) scheduled = setTimeout(check, FIELD_CHECK_MS);
             });
             observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
