@@ -979,8 +979,8 @@
 
     /**
      * Window capture listener: an event aimed at the layer is stopped there, so no page listener
-     * (capture or bubble, on the document or on an element) runs for it, then the layer's own
-     * handlers run from the target up to the host.
+     * added after it (on the window, the document or an element, capture or bubble) runs for
+     * it, then the layer's own handlers run from the target up to the host.
      * @param {Event} event - Pointer, mouse or touch event.
      */
     function routeLayerEvent(event) {
@@ -988,7 +988,7 @@
         var path = event.composedPath();
         var hostIndex = path.indexOf(layer.host);
         if (hostIndex < 0) return;
-        event.stopPropagation();
+        event.stopImmediatePropagation();
         for (var i = 0; i < hostIndex; i++) {
             var handlers = layerHandlers.get(path[i]);
             if (handlers && handlers[event.type]) {
