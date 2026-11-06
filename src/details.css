@@ -53,6 +53,34 @@
     cursor: not-allowed;
 }
 
+/* === "EXTRACT EACH URL" BUTTON OF THE LIST TAB === */
+
+.extract-each-url {
+    display: block;
+    width: 100%;
+    height: 32px;
+    margin-top: 8px;
+    padding: 0 10px;
+    font-family: var(--font-family);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-teal);
+    background: var(--accent-teal-dim);
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.extract-each-url:hover {
+    color: var(--text-inverse);
+    background: var(--accent-teal);
+}
+
+.extract-each-url[hidden] {
+    display: none;
+}
+
 /* === DETAILS PANEL (overlays the list panel, which stays laid out underneath) === */
 
 .details-panel {

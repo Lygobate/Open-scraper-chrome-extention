@@ -276,6 +276,26 @@
     }
 
     /**
+     * Shows the "Extract each URL" button of the list tab when the list results have a URL column.
+     */
+    function updateExtractEachUrlButton() {
+        const table = readListTable();
+        $id("extractEachUrl").hidden = !(table && getUrlColumns(table).length);
+    }
+
+    /**
+     * Uses the list results as the pages to visit and opens step 1 of the details tab.
+     */
+    function extractEachListUrl() {
+        if (isBusy()) return;
+        state.sourceChosen = true;
+        state.step = 1;
+        refreshListSource();
+        setSource("list");
+        setMode("details");
+    }
+
+    /**
      * Decodes a CSV file: UTF-16 with a byte order mark, else strict UTF-8, else Windows-1252.
      * @param {ArrayBuffer} buffer - File content.
      * @returns {string} Decoded text.
@@ -1813,6 +1833,14 @@
     }
 
     // --- Wiring ---
+
+    // The list grid is drawn again after every read of the list: check its columns then
+    let listCheckTimer = 0;
+    new MutationObserver(() => {
+        clearTimeout(listCheckTimer);
+        listCheckTimer = setTimeout(updateExtractEachUrlButton, 400);
+    }).observe($id("hot"), { childList: true });
+    $id("extractEachUrl").addEventListener("click", extractEachListUrl);
 
     $id("tabList").addEventListener("click", () => setMode("list"));
     $id("tabDetails").addEventListener("click", () => setMode("details"));
