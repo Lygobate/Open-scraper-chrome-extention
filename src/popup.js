@@ -3,175 +3,6 @@
 
     const chromeInstance = chrome;
 
-    // Keys used to store local table configurations
-    const STORAGE_KEYS = {
-        TABLES: "tableConfigurations"
-    };
-
-    /**
-     * Asynchronous helper to read from the extension's local storage.
-     * @param {string[]} keys - List of keys to retrieve.
-     * @returns {Promise<Object>} Promise containing the read values.
-     */
-    const getLocalStorage = async (keys) => chromeInstance.storage.local.get(keys);
-
-    /**
-     * Filters table configurations applicable to a URL based on the configured scope (path).
-     * @param {Array} configs - Configurations to filter.
-     * @param {string} url - URL of the current web page.
-     * @returns {Array} Filtered list of applicable configurations.
-     */
-    function filterConfigsByScope(configs, url) {
-        if (!configs?.length) return configs ?? [];
-
-        return configs.filter(config => {
-            if (!config.scope) return true;
-
-            return (() => {
-                const scope = config.scope;
-                if (!scope || !url) return true;
-
-                const pathPatterns = scope.pathPatterns ?? [];
-                if (!pathPatterns.length) return true;
-
-                let pathname;
-                try {
-                    pathname = new URL(url).pathname;
-                } catch {
-                    pathname = url;
-                }
-
-                return pathPatterns.some(pattern => {
-                    try {
-                        return new RegExp(pattern).test(pathname);
-                    } catch {
-                        return false;
-                    }
-                });
-            })();
-        });
-    }
-
-    /**
-     * Updates the dropdown menu of saved configurations for the site in the popup.
-     * @param {Array} configs - Applicable table configurations.
-     * @param {number} [selectedConfigIndex] - Default selected configuration index.
-     */
-    function updateConfigDropdown(configs, selectedConfigIndex) {
-        const $savedConfigSection = $("#savedConfigSection");
-        const $savedConfigSelect = $("#savedConfigSelect");
-
-        $savedConfigSection.css("display", "flex");
-        $("#applyConfig").show();
-
-        const applyConfigBtn = document.getElementById("applyConfig");
-        if (applyConfigBtn) {
-            applyConfigBtn.textContent = chromeInstance.i18n.getMessage("popupApply");
-            applyConfigBtn.style.display = "inline-block";
-        }
-
-        $savedConfigSelect.empty();
-
-        if (configs && configs.length !== 0) {
-            $savedConfigSelect.append(
-                $("<option>")
-                    .attr("value", "")
-                    .text(chromeInstance.i18n.getMessage("popupSavedConfigPlaceholder"))
-                    .prop("disabled", true)
-                    .prop("selected", true)
-            );
-            configs.forEach((config, index) => {
-                $savedConfigSelect.append($("<option>").attr("value", index).text(config.name));
-            });
-            $savedConfigSelect.prop("disabled", false);
-
-            if (selectedConfigIndex != null && configs[selectedConfigIndex]) {
-                $savedConfigSelect.val(String(selectedConfigIndex));
-                if (applyConfigBtn) applyConfigBtn.disabled = false;
-            } else {
-                if (applyConfigBtn) applyConfigBtn.disabled = true;
-            }
-            $savedConfigSection.removeClass("saved-config-empty");
-        } else {
-            $savedConfigSelect.append(
-                $("<option>")
-                    .attr("value", "")
-                    .text(chromeInstance.i18n.getMessage("popupSavedConfigEmpty"))
-                    .prop("disabled", true)
-                    .prop("selected", true)
-            );
-            $savedConfigSelect.prop("disabled", true);
-            if (applyConfigBtn) applyConfigBtn.disabled = true;
-            $savedConfigSection.addClass("saved-config-empty");
-        }
-    }
-
-    /**
-     * Retrieves the list of saved configurations for the active tab's domain.
-     * @returns {Promise<Array>} List of valid configurations for the current page.
-     */
-    async function getConfigsForCurrentTab() {
-        const tab = await chromeInstance.tabs.get(currentTab.id).catch(() => null);
-        const url = tab?.url || currentTab.url;
-
-        const hostname = (() => {
-            if (!url || url.startsWith("chrome://") || url.startsWith("chrome-extension://")) return null;
-            try {
-                return new URL(url).hostname.replace(/^www\./, "");
-            } catch {
-                return null;
-            }
-        })();
-
-        if (!hostname) return [];
-
-        const domainConfigs = await (async (host) => {
-            const { [STORAGE_KEYS.TABLES]: storedTables } = await getLocalStorage([STORAGE_KEYS.TABLES]);
-            const configObj = storedTables && typeof storedTables === "object" ? storedTables : {};
-            return configObj[host]?.configs ?? [];
-        })(hostname);
-
-        return filterConfigsByScope(domainConfigs, url);
-    }
-
-    /**
-     * Loads applicable configurations for the current tab.
-     * @returns {Promise<Array>} List of applicable configurations.
-     */
-    async function loadConfigs() {
-        return getConfigsForCurrentTab();
-    }
-
-    /**
-     * Applies the configuration selected in the dropdown menu to the page currently being extracted.
-     */
-    function applySelectedConfig() {
-        const $savedConfigSelect = $("#savedConfigSelect");
-        const configIndex = parseInt($savedConfigSelect.val(), 10);
-
-        if (!isNaN(configIndex)) {
-            getConfigsForCurrentTab().then(configs => {
-                const config = configs[configIndex];
-                if (config) {
-                    chromeInstance.tabs.sendMessage(
-                        currentTab.id,
-                        {
-                            action: "applyConfig",
-                            config: config
-                        },
-                        function(response) {
-                            if (response?.error) {
-                                showStatusMessage(response.error, "noResponseErr", false);
-                            } else if (response) {
-                                onTableDataReceived(response, true, configIndex);
-                            }
-                        }
-                    );
-                }
-            });
-        }
-    }
-
     /**
      * Converts a JS date value to an Excel date serial number.
      * @param {string} dateStr - Date as text.
@@ -247,18 +78,6 @@
         return XLSX.write(workbook, {
             type: "binary"
         });
-    }
-
-    /**
-     * Safely executes a function by catching exceptions.
-     * @param {Function} fn - Function to execute.
-     */
-    function safeExecute(fn) {
-        try {
-            fn();
-        } catch (error) {
-            console.error("Error caught during safe execution:", error);
-        }
     }
 
     // --- Global State Variables ---
@@ -464,9 +283,6 @@
             })
         };
 
-        scrapingState.names = optimalFields;
-        scrapingState.namePaths = fieldNamePaths;
-
         return tabularResult;
     }
 
@@ -566,103 +382,6 @@
         window.addEventListener("copy", copyListener);
         document.execCommand("copy");
         window.removeEventListener("copy", copyListener);
-    }
-
-    /**
-     * Analyzes header configurations and creates selector rules for the active table's columns.
-     */
-    function analyzeAndSaveTableSelector() {
-        (() => {
-            const parseSelectors = str => str.split(",").map(item => item.slice(-100));
-            const createSelectorObj = array => {
-                const selectors = {};
-                for (let i = 0; i < 4; i++) {
-                    selectors[`selector${i}`] = array[i] !== undefined ? array[i] : "";
-                }
-                return selectors;
-            };
-
-            const headersCount = Object.keys(scrapingState.config.headers).length;
-            if (headersCount) {
-                (async (includeDeleted = false) => {
-                    const cleanTableSelector = scrapingState.tableSelector.replace(".tablescraper-selected-table", "");
-                    const classRules = scrapingState.goodClasses.map(cls => cls.split(" ").map(item => "." + item).join(""));
-                    const rulesArray = [];
-
-                    classRules.forEach(rule => {
-                        const cleanRule = rule.replace(/.tablescraper-selected-row/g, "");
-                        if (cleanRule.length) {
-                            rulesArray.push(cleanTableSelector + " " + cleanRule + ":not(:empty)");
-                        }
-                    });
-
-                    if (!rulesArray.length) {
-                        rulesArray.push(cleanTableSelector + " > *:not(:empty)");
-                    }
-
-                    const joinedRules = rulesArray.join(",");
-                    const fieldSelectors = [];
-                    let targetFields = scrapingState.names;
-
-                    if (includeDeleted) {
-                        targetFields = targetFields.concat(Object.keys(scrapingState.config.deletedFields));
-                    }
-
-                    for (const field of targetFields) {
-                        const path = scrapingState.namePaths[field];
-                        const selectorRule = { target: "text", field_id: field, param: "" };
-                        if (scrapingState.config.headers[field]) {
-                            selectorRule.field_id = scrapingState.config.headers[field];
-                        }
-
-                        const generatedSelectors = [];
-                        for (const subPath of path) {
-                            let matchedSelector = "";
-                            try {
-                                console.log("Looking for selector...");
-                                matchedSelector = await requestSelectorFromTab(joinedRules, subPath);
-                            } catch (err) {
-                                console.error(err);
-                            }
-                            console.log("Selector found:", matchedSelector);
-                            generatedSelectors.push(matchedSelector);
-
-                            const splitSubPath = subPath.split(" ");
-                            if (splitSubPath.filter(word => word === "href").length) {
-                                selectorRule.target = "prop";
-                                selectorRule.param = "href";
-                            }
-                            if (splitSubPath.filter(word => word === "src").length) {
-                                selectorRule.target = "prop";
-                                selectorRule.param = "src";
-                            }
-                        }
-                        selectorRule.selector = generatedSelectors.join(",");
-                        fieldSelectors.push(selectorRule);
-                    }
-                    return [joinedRules, fieldSelectors];
-                })(true).then(result => {
-                    const [tableRules, selectors] = result;
-                    const findSelectorByField = fieldId => selectors.find(s => s.field_id === fieldId);
-                    const baseMetadata = {
-                        tableId: scrapingState.tableId,
-                        hostName: scrapingState.hostName,
-                        startingUrl: scrapingState.startingUrl
-                    };
-
-                    for (const originalName in scrapingState.config.headers) {
-                        const selectorInfo = findSelectorByField(scrapingState.config.headers[originalName]);
-                        if (selectorInfo) {
-                            const parsed = parseSelectors(selectorInfo.selector);
-                            Object.assign(createSelectorObj(parsed), baseMetadata, {
-                                originalName: originalName,
-                                newName: scrapingState.config.headers[originalName]
-                            });
-                        }
-                    }
-                });
-            }
-        })();
     }
 
     /**
@@ -787,9 +506,8 @@
      * Callback triggered upon receiving the initial table analysis structure.
      * @param {Object} tableData - Table data and selectors sent by the target tab.
      * @param {boolean} [isInitial=false] - Indicates if it's the initial load.
-     * @param {number} [configIndex] - Index of a pre-saved table configuration to apply immediately.
      */
-    function onTableDataReceived(tableData, isInitial, configIndex) {
+    function onTableDataReceived(tableData, isInitial) {
         if (!tableData) {
             if (currentTab.reloaded) {
                 return handleUnsupportedSite();
@@ -811,13 +529,8 @@
         scrapingState.failedToProcess = false;
         scrapingState.processingError = null;
         scrapingState.tableSelector = tableData.tableSelector;
-        scrapingState.startingUrl = tableData.href;
         scrapingState.hostName = tableData.hostname;
         scrapingState.pages = 0;
-
-        if (tableData.nextSelector) {
-            localStorage.setItem("nextSelector:" + tableData.hostname, tableData.nextSelector);
-        }
 
         scrapingState.previewLength = 0;
         scrapingState.configName = tableData.hostname + "-config";
@@ -827,14 +540,6 @@
             crawlDelay: 1000,
             maxWait: 20000
         };
-
-        if (tableData.paginationType === "scroll") {
-            scrapingState.config.infinateScrollChecked = true;
-            saveCurrentConfig();
-        } else if (tableData.paginationType === "nextButton") {
-            scrapingState.config.infinateScrollChecked = false;
-            saveCurrentConfig();
-        }
 
         if (Object.keys(scrapingState.config.deletedFields).length) {
             $("#resetColumns").show();
@@ -903,30 +608,24 @@
                     scrapingState.pages = 1;
                     scrapingState.lastRows = response.data.length;
                     scrapingState.tableSelector = response.tableSelector;
-                    scrapingState.goodClasses = response.goodClasses;
                     scrapingState.workingTime = 0;
 
                     updateUiStats();
                     $(".download-button").show();
 
-                    loadConfigs().then(configs => {
-                        updateConfigDropdown(configs, configIndex);
-                        renderHandsontable();
-                    });
+                    renderHandsontable();
 
                     // Configuration of download / copy data buttons
                     $("#csv")
                         .off("click")
                         .click(function() {
                             console.log("Downloading CSV...");
-                            safeExecute(analyzeAndSaveTableSelector);
                             exportCsv(prepareDataForExport(scrapingState.data), domainKey + ".csv");
                         });
 
                     $("#xlsx")
                         .off("click")
                         .click(function() {
-                            safeExecute(analyzeAndSaveTableSelector);
                             exportXlsx(
                                 prepareDataForExport(scrapingState.data),
                                 domainKey + ".xlsx",
@@ -937,7 +636,6 @@
                     $("#copy")
                         .off("click")
                         .click(function() {
-                            safeExecute(analyzeAndSaveTableSelector);
                             copyTsv(prepareDataForExport(scrapingState.data));
                         });
                 }
@@ -992,22 +690,6 @@
             .append($("<div>", { text: "Working time: " + parseInt(scrapingState.workingTime / 1000) + "s" }));
     }
 
-    /**
-     * Asks the active tab to calculate an optimal column selector.
-     * @param {string} rowSelector - Data row selector.
-     * @param {string} path - Path of the cell to analyze.
-     * @returns {Promise<string>} Promise resolved with the CSS selector.
-     */
-    async function requestSelectorFromTab(rowSelector, path) {
-        const response = await chromeInstance.tabs.sendMessage(currentTab.id, {
-            action: "chooseSelector",
-            rowSelector: rowSelector,
-            path: path
-        });
-        if (!response) throw new Error("Unable to choose a selector!");
-        return response.selector;
-    }
-
     // --- Main Interface Initialization Routine ---
     !async function initializePopup() {
         $("#stopScraping").click(stopScraping);
@@ -1057,29 +739,10 @@
             saveCurrentConfig();
         });
 
-        // Listener for local storage changes (synchronization)
-        chromeInstance.storage.local.onChanged.addListener(changes => {
-            if (changes[STORAGE_KEYS.TABLES]) {
-                loadConfigs().then(configs => updateConfigDropdown(configs));
-            }
-        });
-
         // Listener for URL updates in the source tab
         chromeInstance.tabs.onUpdated.addListener((tabId, changeInfo) => {
             if (tabId === currentTab.id && changeInfo.url) {
                 currentTab.url = changeInfo.url;
-                loadConfigs().then(configs => updateConfigDropdown(configs));
-            }
-        });
-
-        loadConfigs().then(configs => updateConfigDropdown(configs));
-
-        $("#applyConfig").on("click", applySelectedConfig);
-
-        $("#savedConfigSelect").on("change", function() {
-            const applyConfigBtn = document.getElementById("applyConfig");
-            if (applyConfigBtn) {
-                applyConfigBtn.disabled = this.value === "";
             }
         });
 

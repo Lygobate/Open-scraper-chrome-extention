@@ -2141,50 +2141,6 @@
 
     chrome.runtime.onMessage.addListener(function(message, _sender, sendResponse) {
 
-        if ("applyConfig" === message.action) {
-            // Apply a saved scraping configuration to the page
-            (function applyConfig(config, sendResponse) {
-                clearAllHighlights();
-                $(".tablescraper-hover").removeClass("tablescraper-hover");
-                $(".tablescraper-next-button").removeClass("tablescraper-next-button");
-
-                var $tableEl = findElementBySelector(config.tableSelector);
-                if ($tableEl && $tableEl.length) {
-                    var rawEl = $tableEl.get(0);
-                    var rowInfo = findRepeatingChildren(rawEl);
-                    detectedTables = [{
-                        table: rawEl,
-                        goodClasses: rowInfo.goodClasses,
-                        children: rowInfo.children,
-                        selector: config.tableSelector,
-                        robot: null
-                    }];
-                    currentTableIndex = 0;
-                    highlightSelectedTable();
-
-                    var nextSelector = null;
-                    var paginationType = config.pagination?.type ?? null;
-                    if ("nextButton" === paginationType) {
-                        nextSelector = config.pagination.selector;
-                        localStorage.setItem("nextSelector:" + window.location.hostname, nextSelector);
-                    }
-
-                    sendResponse({
-                        tableId: currentTableIndex,
-                        tableSelector: detectedTables[currentTableIndex].selector,
-                        robot: detectedTables[currentTableIndex].robot,
-                        href: window.location.href,
-                        hostname: window.location.hostname,
-                        nextSelector: nextSelector,
-                        paginationType: paginationType
-                    });
-                } else {
-                    sendResponse({ error: "Table not found for selector: " + config.tableSelector });
-                }
-            })(message.config, sendResponse);
-            return true;
-        }
-
         if ("nextTable" === message.action || "findTables" === message.action) {
             // Detect tables on the page or advance to the next detected table
             if ("findTables" === message.action) {
