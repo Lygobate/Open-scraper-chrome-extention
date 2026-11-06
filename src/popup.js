@@ -91,6 +91,17 @@
     // Current scraping state and active configuration
     const scrapingState = {};
     const PREVIEW_LIMIT = 1000;
+
+    // Ways to get more rows than the page shows at first: Min / Max delay defaults (ms), the
+    // localStorage key prefix of the page button they click and the label of the action locating it
+    const MORE_ROWS_MODES = {
+        none: {},
+        scroll: { delays: [1000, 20000] },
+        next: { delays: [1000, 20000], buttonKey: "nextSelector:", locateLabel: 'Locate "Next" button' },
+        loadMore: { delays: [1000, 5000], buttonKey: "loadMoreSelector:", locateLabel: 'Locate "Load more" button' }
+    };
+    // Delays of a site never configured (those of the "Next" button and of scrolling)
+    const DEFAULT_DELAYS = [1000, 20000];
     const robotsTxtRules = null;
 
     /**
@@ -496,11 +507,131 @@
     }
 
     /**
-     * Retrieves the pre-saved 'Next' button selector for this host.
-     * @returns {string|null} The next button selector or null.
+     * Retrieves the pre-saved selector of the "Next" or "Load more" button for this host.
+     * @param {string} mode - "next" or "loadMore".
+     * @returns {string|null} The button selector or null.
      */
-    function getNextPageSelectorFromStorage() {
-        return localStorage.getItem("nextSelector:" + scrapingState.hostName);
+    function getButtonSelector(mode) {
+        return localStorage.getItem(MORE_ROWS_MODES[mode].buttonKey + scrapingState.hostName);
+    }
+
+    /**
+     * Gives a host configuration saved before the "More rows" drop-down its choice:
+     * "Scroll down" when infinite scroll was checked, else "Next page button" when a "Next"
+     * button was located, else "None". Delays that differ from the defaults count as chosen
+     * by the user, so that switching the option keeps them.
+     * @param {Object} config - Host configuration, changed in place.
+     * @param {string} hostName - Host of the page.
+     * @returns {Object} The same configuration.
+     */
+    function migrateMoreRowsConfig(config, hostName) {
+        if (typeof config.crawlDelay !== "number" || typeof config.maxWait !== "number") {
+            config.crawlDelay = DEFAULT_DELAYS[0];
+            config.maxWait = DEFAULT_DELAYS[1];
+        }
+        if (!MORE_ROWS_MODES[config.moreRows]) {
+            config.moreRows = config.infinateScrollChecked ? "scroll"
+                : localStorage.getItem("nextSelector:" + hostName) ? "next" : "none";
+            config.delaysEdited = config.crawlDelay !== DEFAULT_DELAYS[0] || config.maxWait !== DEFAULT_DELAYS[1];
+        }
+        delete config.infinateScrollChecked;
+        return config;
+    }
+
+    /**
+     * Returns the chosen way to get more rows.
+     * @returns {string} "none", "scroll", "next" or "loadMore".
+     */
+    function getMoreRowsMode() {
+        return scrapingState.config && MORE_ROWS_MODES[scrapingState.config.moreRows] ? scrapingState.config.moreRows : "none";
+    }
+
+    /**
+     * Returns the instructions shown for the chosen way to get more rows.
+     * @param {string} mode - "none", "scroll", "next" or "loadMore".
+     * @param {boolean} located - Whether its button is located in the page.
+     * @returns {string} Instructions text.
+     */
+    function getMoreRowsInstructions(mode, located) {
+        if (mode === "scroll") return 'Press "Start crawling" to scroll down and get more rows.';
+        if (mode === "next") {
+            return located
+                ? '"Next" button located. Press "Start crawling" to get more pages, or locate it again if it is the wrong one.'
+                : 'Locate the "Next" button to crawl more pages.';
+        }
+        if (mode === "loadMore") {
+            return located
+                ? '"Load more" button located. Press "Start crawling" to get more rows, or locate it again if it is the wrong one.'
+                : 'Locate the "Load more" button to get more rows.';
+        }
+        return "Download the data, or choose how to get more rows.";
+    }
+
+    /**
+     * Shows the controls of the chosen way to get more rows: the action that locates its
+     * button, the delays, and "Start crawling" once a crawl can start. The located button is
+     * marked in the page (any former mark is removed).
+     */
+    function applyMoreRowsMode() {
+        const mode = getMoreRowsMode();
+        const modeInfo = MORE_ROWS_MODES[mode];
+        const selector = modeInfo.buttonKey ? getButtonSelector(mode) : null;
+        if (mode === "next") scrapingState.nextSelector = selector;
+        if (mode === "loadMore") scrapingState.loadMoreSelector = selector;
+
+        $("#moreRows").val(mode);
+        $("#locateButton").text(modeInfo.locateLabel || "").toggle(!!modeInfo.buttonKey);
+        $("#crawlDelays").toggle(mode !== "none");
+        $("#crawlDelay").val(scrapingState.config.crawlDelay / 1000);
+        $("#maxWait").val(scrapingState.config.maxWait / 1000);
+        showStatusMessage("", "inputError");
+        $("#startScraping").toggle(mode === "scroll");
+        showStatusMessage(getMoreRowsInstructions(mode, false), "instructions");
+        if (scrapingState.data) updateUiStats();
+
+        chromeInstance.tabs.sendMessage(
+            currentTab.id,
+            { action: "markButton", selector: selector, kind: mode },
+            function(markResponse) {
+                void chromeInstance.runtime.lastError;
+                if (!selector || !markResponse || markResponse.error) return;
+                if (scrapingState.scraping || getMoreRowsMode() !== mode) return;
+                $("#startScraping").show();
+                showStatusMessage(getMoreRowsInstructions(mode, true), "instructions");
+            }
+        );
+    }
+
+    /**
+     * Ends the picking of a button in the page, if under way.
+     */
+    function stopButtonPicking() {
+        if (!scrapingState.gettingNext) return;
+        scrapingState.gettingNext = false;
+        chromeInstance.tabs.sendMessage(currentTab.id, { action: "stopButtonPicker" }, function() {
+            void chromeInstance.runtime.lastError;
+        });
+    }
+
+    /**
+     * Adds rows read from the page to the collected rows.
+     * @param {Array<Object>} newRows - Rows read.
+     * @param {boolean} dropKnown - Leave out rows identical to one already collected (for a
+     *     list the page has drawn again); otherwise every row is added, repeated values included.
+     */
+    function addCollectedRows(newRows, dropKnown) {
+        if (!dropKnown) {
+            scrapingState.data = scrapingState.data.concat(newRows);
+            return;
+        }
+        const knownRows = new Set(scrapingState.data.map(row => JSON.stringify(row)));
+        newRows.forEach(function(row) {
+            const key = JSON.stringify(row);
+            if (!knownRows.has(key)) {
+                knownRows.add(key);
+                scrapingState.data.push(row);
+            }
+        });
     }
 
     /**
@@ -535,12 +666,12 @@
 
         scrapingState.previewLength = 0;
         scrapingState.configName = tableData.hostname + "-config";
-        scrapingState.config = JSON.parse(localStorage.getItem(scrapingState.configName)) || {
+        scrapingState.config = migrateMoreRowsConfig(JSON.parse(localStorage.getItem(scrapingState.configName)) || {
             headers: {},
             deletedFields: {},
-            crawlDelay: 1000,
-            maxWait: 20000
-        };
+            crawlDelay: DEFAULT_DELAYS[0],
+            maxWait: DEFAULT_DELAYS[1]
+        }, scrapingState.hostName);
 
         if (Object.keys(scrapingState.config.deletedFields).length) {
             $("#resetColumns").show();
@@ -554,12 +685,6 @@
         })();
 
         $("#wrongTable").show();
-
-        if (scrapingState.config.infinateScrollChecked) {
-            $("#nextButton").hide();
-            $("#startScraping").show();
-            $("#infinateScroll").prop("checked", true);
-        }
 
         chromeInstance.tabs.sendMessage(
             currentTab.id,
@@ -577,41 +702,18 @@
                         scrapingState.failedToProcess = false;
                     }
 
-                    if (scrapingState.pages || scrapingState.config.infinateScrollChecked) {
-                        // Nothing
-                    } else {
-                        $("#nextButton").show();
-                    }
-
-                    if (!scrapingState.pages) {
-                        scrapingState.nextSelector = getNextPageSelectorFromStorage();
-                        if (scrapingState.nextSelector) {
-                            chromeInstance.tabs.sendMessage(
-                                currentTab.id,
-                                {
-                                    action: "markNextButton",
-                                    selector: scrapingState.nextSelector
-                                },
-                                function(markResponse) {
-                                    if (!markResponse.error) {
-                                        $("#startScraping").show();
-                                    }
-                                }
-                            );
-                        }
-                    }
-
                     $("#wait").hide();
                     $("#content").show();
-                    showStatusMessage('Download data or locate "Next" to crawl multiple pages', "instructions");
 
                     scrapingState.data = response.data;
                     scrapingState.pages = 1;
+                    scrapingState.loadRounds = 0;
+                    scrapingState.rowCount = response.rowCount;
                     scrapingState.lastRows = response.data.length;
                     scrapingState.tableSelector = response.tableSelector;
                     scrapingState.workingTime = 0;
 
-                    updateUiStats();
+                    applyMoreRowsMode();
                     $(".download-button").show();
 
                     renderHandsontable();
@@ -661,34 +763,104 @@
     }
 
     /**
-     * Checks if the 'Infinite scroll' mode is checked.
-     * @returns {boolean} True if infinite scroll is active.
-     */
-    function isInfiniteScrollChecked() {
-        return $("#infinateScroll").is(":checked");
-    }
-
-    /**
-     * Stops the current scraping process.
+     * Stops the current scraping process. A "Load more" round under way ends first
+     * (Max delay at most): the crawl controls come back once it has.
      */
     function stopScraping() {
         scrapingState.scraping = false;
         console.log("Scraping stopped.");
-        $("#startScraping").show();
         $("#stopScraping").hide();
+        if (scrapingState.roundPending) {
+            return showStatusMessage("Stopping...", "instructions");
+        }
+        $("#startScraping").show();
+        $("#moreRows").prop("disabled", false);
+        $("#locateButton").toggle(!!MORE_ROWS_MODES[getMoreRowsMode()].buttonKey);
         showStatusMessage("Crawling stopped. Please download data or continue crawling.", "instructions");
     }
 
     /**
      * Updates the scraping information values displayed in the #stats container.
+     * "Load more" counts rounds (clicks that brought rows) instead of pages.
      */
     function updateUiStats() {
+        const byRound = getMoreRowsMode() === "loadMore";
         $("#stats")
             .empty()
-            .append($("<div>", { text: "Pages scraped: " + scrapingState.pages }))
+            .append($("<div>", { text: byRound ? "Rounds: " + scrapingState.loadRounds : "Pages scraped: " + scrapingState.pages }))
             .append($("<div>", { text: "Rows collected: " + scrapingState.data.length }))
-            .append($("<div>", { text: "Rows from last page: " + scrapingState.lastRows }))
+            .append($("<div>", { text: (byRound ? "Rows from last round: " : "Rows from last page: ") + scrapingState.lastRows }))
             .append($("<div>", { text: "Working time: " + parseInt(scrapingState.workingTime / 1000) + "s" }));
+    }
+
+    /**
+     * Gets more rows with the page's "Load more" button, round after round. A round clicks the
+     * button once every row of the list has been read, then adds the rows it brought: the page
+     * keeps the rows already read, so each round reads only the rows after them.
+     * Stops when the button is gone (warning) or disabled (all loaded), when a click adds no
+     * rows within Max delay, or when the user stops.
+     */
+    function crawlWithLoadMore() {
+        let startTime = new Date();
+
+        !function loadMoreRound() {
+            const round = scrapingState.loadRounds + 1;
+            scrapingState.roundPending = true;
+            chromeInstance.tabs.sendMessage(
+                currentTab.id,
+                {
+                    action: "loadMore",
+                    selector: scrapingState.loadMoreSelector,
+                    tableSelector: scrapingState.tableSelector,
+                    rowCount: scrapingState.rowCount,
+                    minWait: scrapingState.config.crawlDelay,
+                    maxWait: scrapingState.config.maxWait
+                },
+                function(response) {
+                    void chromeInstance.runtime.lastError;
+                    scrapingState.roundPending = false;
+                    scrapingState.workingTime += new Date() - startTime;
+                    startTime = new Date();
+                    $("#wrongTable").hide();
+
+                    if (!response || response.error) {
+                        updateUiStats();
+                        showStatusMessage("", "instructions");
+                        return showStatusMessage(
+                            response ? response.error : "The page did not answer. Reload it and try again.",
+                            "error",
+                            true
+                        );
+                    }
+
+                    if (response.status === "rows") {
+                        const collectedBefore = scrapingState.data.length;
+                        addCollectedRows(response.data, !response.appended);
+                        scrapingState.rowCount = response.rowCount;
+                        scrapingState.loadRounds = round;
+                        scrapingState.lastRows = scrapingState.data.length - collectedBefore;
+                        updateUiStats();
+                        if (scrapingState.previewLength < PREVIEW_LIMIT) {
+                            renderHandsontable();
+                        } else {
+                            showStatusMessage("Preview limited to 1000 rows.", "previewLimit");
+                        }
+                        return scrapingState.scraping ? loadMoreRound() : stopScraping();
+                    }
+
+                    const endMessages = {
+                        missing: 'The "Load more" button wasn\'t found on round ' + round +
+                            '. If there are more items, locate the button again and press "Start crawling".',
+                        disabled: "All items loaded. Download CSV or Excel file.",
+                        noRows: 'Clicking "Load more" didn\'t add rows on round ' + round +
+                            ". If there are more, raise Max delay or locate the button again."
+                    };
+                    updateUiStats();
+                    stopScraping();
+                    showStatusMessage(endMessages[response.status] || "", "finished");
+                }
+            );
+        }();
     }
 
     // --- Main Interface Initialization Routine ---
@@ -702,6 +874,9 @@
                 return showStatusMessage("Bad min waiting value", "inputError");
             }
             showStatusMessage("", "inputError");
+            if (parseInt(1000 * value) !== scrapingState.config.crawlDelay) {
+                scrapingState.config.delaysEdited = true;
+            }
             scrapingState.config.crawlDelay = parseInt(1000 * value);
             saveCurrentConfig();
         });
@@ -712,6 +887,9 @@
                 return showStatusMessage("Bad max waiting value", "inputError");
             }
             showStatusMessage("", "inputError");
+            if (parseInt(1000 * value) !== scrapingState.config.maxWait) {
+                scrapingState.config.delaysEdited = true;
+            }
             scrapingState.config.maxWait = parseInt(1000 * value);
             saveCurrentConfig();
         });
@@ -723,22 +901,23 @@
             renderHandsontable();
         });
 
-        $("#infinateScroll").click(function() {
-            if (scrapingState.config.infinateScrollChecked) {
-                scrapingState.config.infinateScrollChecked = false;
-                $("#nextButton").show();
-                if (getNextPageSelectorFromStorage()) {
-                    $("#startScraping").show();
-                } else {
-                    $("#startScraping").hide();
-                }
-            } else {
-                scrapingState.config.infinateScrollChecked = true;
-                $("#nextButton").hide();
-                $("#startScraping").show();
+        // Choice of the way to get more rows. Its delay defaults apply while the user has
+        // never changed the delays for this host.
+        $("#moreRows").change(function() {
+            const mode = MORE_ROWS_MODES[$(this).val()] ? $(this).val() : "none";
+            const delays = MORE_ROWS_MODES[mode].delays;
+            stopButtonPicking();
+            scrapingState.config.moreRows = mode;
+            if (delays && !scrapingState.config.delaysEdited) {
+                scrapingState.config.crawlDelay = delays[0];
+                scrapingState.config.maxWait = delays[1];
             }
             saveCurrentConfig();
+            applyMoreRowsMode();
         });
+
+        // A button picking left in the page would keep catching its clicks
+        window.addEventListener("pagehide", stopButtonPicking);
 
         // Listener for URL updates in the source tab
         chromeInstance.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -784,45 +963,54 @@
         );
     });
 
-    $("#nextButton").click(function() {
-        showStatusMessage('Mark "Next" button or link', "instructions");
+    // Picks the "Next" or "Load more" button: the page catches the next click on it
+    $("#locateButton").click(function() {
+        const mode = getMoreRowsMode();
+        const modeInfo = MORE_ROWS_MODES[mode];
+        if (!modeInfo.buttonKey) return;
+        const pickId = (scrapingState.pickId || 0) + 1;
+        scrapingState.pickId = pickId;
         scrapingState.gettingNext = true;
+        showStatusMessage(
+            mode === "next" ? 'Click the "Next" button or link in the page.' : 'Click the "Load more" button in the page.',
+            "instructions"
+        );
 
-        // Recursive polling function for 'Next' button status
-        !function pollNextButtonStatus() {
-            chromeInstance.tabs.sendMessage(
-                currentTab.id,
-                { action: "getNextButton" },
-                function(response) {
-                    if (!scrapingState.scraping) {
-                        if (scrapingState.gettingNext) {
-                            pollNextButtonStatus();
-                        }
-                        if (response.selector) {
-                            $("#startScraping").show();
-                            showStatusMessage(
-                                '"Next" button located. Press "Start crawling" to get more pages or mark another button/link if marked incorrectly.',
-                                "instructions"
-                            );
-                            scrapingState.nextSelector = response.selector;
-                            localStorage.setItem("nextSelector:" + scrapingState.hostName, response.selector);
-                        }
-                    }
-                }
-            );
-        }();
+        chromeInstance.tabs.sendMessage(
+            currentTab.id,
+            { action: "getNextButton", kind: mode },
+            function(response) {
+                void chromeInstance.runtime.lastError;
+                // Answers of a former picking (cancelled) are not this one's
+                if (pickId !== scrapingState.pickId || !response || !response.selector) return;
+                scrapingState.gettingNext = false;
+                if (scrapingState.scraping || getMoreRowsMode() !== mode) return;
+                localStorage.setItem(modeInfo.buttonKey + scrapingState.hostName, response.selector);
+                if (mode === "next") scrapingState.nextSelector = response.selector;
+                if (mode === "loadMore") scrapingState.loadMoreSelector = response.selector;
+                $("#startScraping").show();
+                showStatusMessage(getMoreRowsInstructions(mode, true), "instructions");
+            }
+        );
     });
 
     $("#startScraping").click(function() {
-        scrapingState.gettingNext = false;
+        const mode = getMoreRowsMode();
+        stopButtonPicking();
         scrapingState.scraping = true;
         $("#startScraping").hide();
         $("#stopScraping").show();
+        $("#locateButton").hide();
+        $("#moreRows").prop("disabled", true);
         showStatusMessage("", "error");
-        showStatusMessage('Please wait for more pages or press "Stop crawling".', "instructions");
+        showStatusMessage("", "finished");
+        showStatusMessage(
+            mode === "next" ? 'Please wait for more pages or press "Stop crawling".' : 'Please wait for more rows or press "Stop crawling".',
+            "instructions"
+        );
 
-        if (isInfiniteScrollChecked()) {
-            $("#infinateScrollElement").hide();
+        if (mode === "loadMore") {
+            return crawlWithLoadMore();
         }
 
         let startTime = new Date();
@@ -865,7 +1053,7 @@
                 );
             };
 
-            if (isInfiniteScrollChecked()) {
+            if (mode === "scroll") {
                 clickNextPageButton = scrollDownPage;
             }
 
