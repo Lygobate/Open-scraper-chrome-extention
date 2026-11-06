@@ -3,175 +3,6 @@
 
     const chromeInstance = chrome;
 
-    // Keys used to store local table configurations
-    const STORAGE_KEYS = {
-        TABLES: "tableConfigurations"
-    };
-
-    /**
-     * Asynchronous helper to read from the extension's local storage.
-     * @param {string[]} keys - List of keys to retrieve.
-     * @returns {Promise<Object>} Promise containing the read values.
-     */
-    const getLocalStorage = async (keys) => chromeInstance.storage.local.get(keys);
-
-    /**
-     * Filters table configurations applicable to a URL based on the configured scope (path).
-     * @param {Array} configs - Configurations to filter.
-     * @param {string} url - URL of the current web page.
-     * @returns {Array} Filtered list of applicable configurations.
-     */
-    function filterConfigsByScope(configs, url) {
-        if (!configs?.length) return configs ?? [];
-
-        return configs.filter(config => {
-            if (!config.scope) return true;
-
-            return (() => {
-                const scope = config.scope;
-                if (!scope || !url) return true;
-
-                const pathPatterns = scope.pathPatterns ?? [];
-                if (!pathPatterns.length) return true;
-
-                let pathname;
-                try {
-                    pathname = new URL(url).pathname;
-                } catch {
-                    pathname = url;
-                }
-
-                return pathPatterns.some(pattern => {
-                    try {
-                        return new RegExp(pattern).test(pathname);
-                    } catch {
-                        return false;
-                    }
-                });
-            })();
-        });
-    }
-
-    /**
-     * Updates the dropdown menu of saved configurations for the site in the popup.
-     * @param {Array} configs - Applicable table configurations.
-     * @param {number} [selectedConfigIndex] - Default selected configuration index.
-     */
-    function updateConfigDropdown(configs, selectedConfigIndex) {
-        const $savedConfigSection = $("#savedConfigSection");
-        const $savedConfigSelect = $("#savedConfigSelect");
-
-        $savedConfigSection.css("display", "flex");
-        $("#applyConfig").show();
-
-        const applyConfigBtn = document.getElementById("applyConfig");
-        if (applyConfigBtn) {
-            applyConfigBtn.textContent = chromeInstance.i18n.getMessage("popupApply");
-            applyConfigBtn.style.display = "inline-block";
-        }
-
-        $savedConfigSelect.empty();
-
-        if (configs && configs.length !== 0) {
-            $savedConfigSelect.append(
-                $("<option>")
-                    .attr("value", "")
-                    .text(chromeInstance.i18n.getMessage("popupSavedConfigPlaceholder"))
-                    .prop("disabled", true)
-                    .prop("selected", true)
-            );
-            configs.forEach((config, index) => {
-                $savedConfigSelect.append($("<option>").attr("value", index).text(config.name));
-            });
-            $savedConfigSelect.prop("disabled", false);
-
-            if (selectedConfigIndex != null && configs[selectedConfigIndex]) {
-                $savedConfigSelect.val(String(selectedConfigIndex));
-                if (applyConfigBtn) applyConfigBtn.disabled = false;
-            } else {
-                if (applyConfigBtn) applyConfigBtn.disabled = true;
-            }
-            $savedConfigSection.removeClass("saved-config-empty");
-        } else {
-            $savedConfigSelect.append(
-                $("<option>")
-                    .attr("value", "")
-                    .text(chromeInstance.i18n.getMessage("popupSavedConfigEmpty"))
-                    .prop("disabled", true)
-                    .prop("selected", true)
-            );
-            $savedConfigSelect.prop("disabled", true);
-            if (applyConfigBtn) applyConfigBtn.disabled = true;
-            $savedConfigSection.addClass("saved-config-empty");
-        }
-    }
-
-    /**
-     * Retrieves the list of saved configurations for the active tab's domain.
-     * @returns {Promise<Array>} List of valid configurations for the current page.
-     */
-    async function getConfigsForCurrentTab() {
-        const tab = await chromeInstance.tabs.get(currentTab.id).catch(() => null);
-        const url = tab?.url || currentTab.url;
-
-        const hostname = (() => {
-            if (!url || url.startsWith("chrome://") || url.startsWith("chrome-extension://")) return null;
-            try {
-                return new URL(url).hostname.replace(/^www\./, "");
-            } catch {
-                return null;
-            }
-        })();
-
-        if (!hostname) return [];
-
-        const domainConfigs = await (async (host) => {
-            const { [STORAGE_KEYS.TABLES]: storedTables } = await getLocalStorage([STORAGE_KEYS.TABLES]);
-            const configObj = storedTables && typeof storedTables === "object" ? storedTables : {};
-            return configObj[host]?.configs ?? [];
-        })(hostname);
-
-        return filterConfigsByScope(domainConfigs, url);
-    }
-
-    /**
-     * Loads applicable configurations for the current tab.
-     * @returns {Promise<Array>} List of applicable configurations.
-     */
-    async function loadConfigs() {
-        return getConfigsForCurrentTab();
-    }
-
-    /**
-     * Applies the configuration selected in the dropdown menu to the page currently being extracted.
-     */
-    function applySelectedConfig() {
-        const $savedConfigSelect = $("#savedConfigSelect");
-        const configIndex = parseInt($savedConfigSelect.val(), 10);
-
-        if (!isNaN(configIndex)) {
-            getConfigsForCurrentTab().then(configs => {
-                const config = configs[configIndex];
-                if (config) {
-                    chromeInstance.tabs.sendMessage(
-                        currentTab.id,
-                        {
-                            action: "applyConfig",
-                            config: config
-                        },
-                        function(response) {
-                            if (response?.error) {
-                                showStatusMessage(response.error, "noResponseErr", false);
-                            } else if (response) {
-                                onTableDataReceived(response, true, configIndex);
-                            }
-                        }
-                    );
-                }
-            });
-        }
-    }
-
     /**
      * Converts a JS date value to an Excel date serial number.
      * @param {string} dateStr - Date as text.
@@ -787,9 +618,8 @@
      * Callback triggered upon receiving the initial table analysis structure.
      * @param {Object} tableData - Table data and selectors sent by the target tab.
      * @param {boolean} [isInitial=false] - Indicates if it's the initial load.
-     * @param {number} [configIndex] - Index of a pre-saved table configuration to apply immediately.
      */
-    function onTableDataReceived(tableData, isInitial, configIndex) {
+    function onTableDataReceived(tableData, isInitial) {
         if (!tableData) {
             if (currentTab.reloaded) {
                 return handleUnsupportedSite();
@@ -815,10 +645,6 @@
         scrapingState.hostName = tableData.hostname;
         scrapingState.pages = 0;
 
-        if (tableData.nextSelector) {
-            localStorage.setItem("nextSelector:" + tableData.hostname, tableData.nextSelector);
-        }
-
         scrapingState.previewLength = 0;
         scrapingState.configName = tableData.hostname + "-config";
         scrapingState.config = JSON.parse(localStorage.getItem(scrapingState.configName)) || {
@@ -827,14 +653,6 @@
             crawlDelay: 1000,
             maxWait: 20000
         };
-
-        if (tableData.paginationType === "scroll") {
-            scrapingState.config.infinateScrollChecked = true;
-            saveCurrentConfig();
-        } else if (tableData.paginationType === "nextButton") {
-            scrapingState.config.infinateScrollChecked = false;
-            saveCurrentConfig();
-        }
 
         if (Object.keys(scrapingState.config.deletedFields).length) {
             $("#resetColumns").show();
@@ -909,10 +727,7 @@
                     updateUiStats();
                     $(".download-button").show();
 
-                    loadConfigs().then(configs => {
-                        updateConfigDropdown(configs, configIndex);
-                        renderHandsontable();
-                    });
+                    renderHandsontable();
 
                     // Configuration of download / copy data buttons
                     $("#csv")
@@ -1057,29 +872,10 @@
             saveCurrentConfig();
         });
 
-        // Listener for local storage changes (synchronization)
-        chromeInstance.storage.local.onChanged.addListener(changes => {
-            if (changes[STORAGE_KEYS.TABLES]) {
-                loadConfigs().then(configs => updateConfigDropdown(configs));
-            }
-        });
-
         // Listener for URL updates in the source tab
         chromeInstance.tabs.onUpdated.addListener((tabId, changeInfo) => {
             if (tabId === currentTab.id && changeInfo.url) {
                 currentTab.url = changeInfo.url;
-                loadConfigs().then(configs => updateConfigDropdown(configs));
-            }
-        });
-
-        loadConfigs().then(configs => updateConfigDropdown(configs));
-
-        $("#applyConfig").on("click", applySelectedConfig);
-
-        $("#savedConfigSelect").on("change", function() {
-            const applyConfigBtn = document.getElementById("applyConfig");
-            if (applyConfigBtn) {
-                applyConfigBtn.disabled = this.value === "";
             }
         });
 
