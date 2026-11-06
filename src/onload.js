@@ -1961,6 +1961,25 @@
     }
 
     /**
+     * Scrolls an element down (or up) at once. Pages that ask for smooth scrolling
+     * (scroll-behavior: smooth) would otherwise only move it after an animation.
+     * @param {Element} element - Element to scroll.
+     * @param {number} amount - Pixels, negative upwards.
+     */
+    function scrollInstantly(element, amount) {
+        element.scrollBy({ top: amount, behavior: "instant" });
+    }
+
+    /**
+     * Tells whether a box lets its content scroll vertically (its own scroll bar).
+     * @param {CSSStyleDeclaration} style - Computed style of the box.
+     * @returns {boolean} True for overflow-y auto, scroll or overlay.
+     */
+    function scrollsOnItsOwn(style) {
+        return /^(auto|scroll|overlay)$/.test(style.overflowY);
+    }
+
+    /**
      * Finds the element that should scroll for a move under a point: the closest ancestor of
      * the element there that can still scroll that way. The page's own scrolling element is
      * left to the browser (null), which scrolls it natively and smoothly.
@@ -1984,7 +2003,7 @@
         while (element && element !== documentScroller && element !== document.documentElement) {
             if ((element !== document.body || bodyOwnBox) && element !== layer.host) {
                 var style = getComputedStyle(element);
-                var canY = dy && /^(auto|scroll|overlay)$/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1 &&
+                var canY = dy && scrollsOnItsOwn(style) && element.scrollHeight > element.clientHeight + 1 &&
                     (dy > 0 ? element.scrollTop + element.clientHeight < element.scrollHeight - 1 : element.scrollTop > 0);
                 var canX = dx && /^(auto|scroll|overlay)$/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1 &&
                     (dx > 0 ? element.scrollLeft + element.clientWidth < element.scrollWidth - 1 : element.scrollLeft > 0);
@@ -2434,6 +2453,124 @@
         });
     }
 
+    // --- Load full page (option of a template) ---
+
+    // Pause after each jump down, so that the page's lazy loaders see the part shown and start
+    var FULL_PAGE_STEP_PAUSE_MS = 120;
+    // At the bottom, the page counts as fully loaded once its height has not grown for this long
+    var FULL_PAGE_STABLE_MS = 500;
+    // Longest wait for the page's load event before scrolling (its scripts set up the lazy loaders)
+    var FULL_PAGE_LOAD_WAIT_MS = 5000;
+    // Most jumps on one page: a page that keeps growing (endless feed) is read after that
+    var FULL_PAGE_MAX_STEPS = 150;
+    // Each new scroll, and every stop of the scraping window, ends the scroll under way
+    var fullPageScrollToken = 0;
+
+    /**
+     * Ends the "Load full page" scroll under way, if any.
+     */
+    function stopFullPageScroll() {
+        fullPageScrollToken++;
+    }
+
+    /**
+     * Finds what scrolls the page: the document when it is taller than the window, else the
+     * largest inner box that scrolls (web apps whose body does not scroll).
+     * @returns {Element|null} Element to scroll, or null when nothing scrolls.
+     */
+    function findPageScroller() {
+        var documentScroller = document.scrollingElement || document.documentElement;
+        if (documentScroller.scrollHeight > documentScroller.clientHeight + 1) return documentScroller;
+        var best = null;
+        var bestArea = 0;
+        var elements = document.body ? document.body.getElementsByTagName("*") : [];
+        for (var i = 0; i < elements.length; i++) {
+            var element = elements[i];
+            if (element.scrollHeight <= element.clientHeight + 1 || !element.clientHeight) continue;
+            if (layer && element === layer.host) continue;
+            var area = element.clientHeight * element.clientWidth;
+            if (area > bestArea && scrollsOnItsOwn(getComputedStyle(element))) {
+                best = element;
+                bestArea = area;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * "Load full page": scrolls the page down to its very end, one window at a time, so that
+     * the content shown only once scrolled to (lazy images, reviews, comments, related items)
+     * is there, then scrolls back to where it was. Waits first for the page's load event (at
+     * most FULL_PAGE_LOAD_WAIT_MS), as its scripts set up the lazy loaders. The end counts as
+     * reached once the page has not grown for FULL_PAGE_STABLE_MS at the bottom.
+     * @param {number} limitMs - Longest time, in milliseconds.
+     * @returns {Promise<{bottom: boolean, steps: number, cancelled: boolean}>} Whether the end
+     *     was reached, the jumps made, and whether the scroll was stopped (stopFullPageScroll).
+     */
+    function scrollThroughPage(limitMs) {
+        var token = ++fullPageScrollToken;
+        var end = Date.now() + Math.max(0, Number(limitMs) || 0);
+        var loadEnd = Math.min(end, Date.now() + FULL_PAGE_LOAD_WAIT_MS);
+        return new Promise(function(resolve) {
+            var scroller = null;
+            var startTop = 0;
+            var steps = 0;
+            var lastHeight = 0;
+            var heightSince = 0;
+            var bottomSince = 0;
+            // A page can keep the scroll from moving: after a few jumps that did not move, it is the end
+            var jumpedFrom = -1;
+            var stuckJumps = 0;
+            var finish = function(bottom) {
+                var cancelled = token !== fullPageScrollToken;
+                // Back to where the page was, unless a newer scroll took over
+                if (scroller && !cancelled) scroller.scrollTo({ top: startTop, behavior: "instant" });
+                resolve({ bottom: bottom, steps: steps, cancelled: cancelled });
+            };
+            var step = function() {
+                if (token !== fullPageScrollToken) return finish(false);
+                var now = Date.now();
+                if (now >= end) return finish(false);
+                var height = scroller.scrollHeight;
+                if (height !== lastHeight) {
+                    lastHeight = height;
+                    heightSince = now;
+                }
+                var top = scroller.scrollTop;
+                if (jumpedFrom >= 0) {
+                    stuckJumps = top === jumpedFrom ? stuckJumps + 1 : 0;
+                    jumpedFrom = -1;
+                }
+                if (top + scroller.clientHeight >= height - 2 || stuckJumps >= 3) {
+                    if (!bottomSince) bottomSince = now;
+                    if (now - Math.max(bottomSince, heightSince) >= FULL_PAGE_STABLE_MS) return finish(true);
+                    return setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
+                }
+                bottomSince = 0;
+                if (steps >= FULL_PAGE_MAX_STEPS) return finish(false);
+                steps++;
+                jumpedFrom = top;
+                scrollInstantly(scroller, Math.max(100, Math.round(scroller.clientHeight * 0.85)));
+                setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
+            };
+            var start = function() {
+                window.removeEventListener("load", start);
+                clearTimeout(loadTimer);
+                if (token !== fullPageScrollToken) return finish(false);
+                scroller = findPageScroller();
+                if (!scroller) return finish(true);
+                startTop = scroller.scrollTop;
+                lastHeight = scroller.scrollHeight;
+                heightSince = Date.now();
+                step();
+            };
+            var loadTimer = 0;
+            if (document.readyState === "complete") return start();
+            window.addEventListener("load", start);
+            loadTimer = setTimeout(start, Math.max(0, loadEnd - Date.now()));
+        });
+    }
+
     /**
      * Highlights the elements found for the fields (and scrolls to them when none is in view).
      * @param {Array<{selectors: string[]}>} fields - Fields.
@@ -2471,6 +2608,7 @@
      * Removes everything this extension shows in the page.
      */
     function clearDetailsLayer() {
+        stopFullPageScroll();
         stopFieldPicker();
         clearLayerBoxes("found");
         setBusyOverlay(false);
@@ -2489,6 +2627,7 @@
                     readyState: document.readyState });
                 break;
             case "detailsPickerStart":
+                stopFullPageScroll();
                 clearLayerBoxes("found");
                 setBusyOverlay(false);
                 startFieldPicker(message.existing);
@@ -2507,9 +2646,13 @@
                 sendResponse(getPickerSnapshot());
                 break;
             case "detailsPreview":
-                // Waits for the page to show a field, reads one row and highlights what was found
+                // Scrolls through the page first with "Load full page", waits for the page to
+                // show a field, reads one row and highlights what was found
                 (function(fields) {
-                    waitForFields(fields, message.waitMs).then(function() {
+                    var scrolled = message.fullPage ? scrollThroughPage(message.limitMs) : Promise.resolve(null);
+                    scrolled.then(function(scroll) {
+                        return waitForFields(fields, scroll && scroll.cancelled ? 0 : message.waitMs);
+                    }).then(function() {
                         try {
                             // The picker may have been turned on meanwhile: its boxes stay alone
                             sendResponse({
@@ -2540,10 +2683,13 @@
                 })(message.field);
                 break;
             case "detailsClearHighlights":
+                stopFullPageScroll();
                 clearLayerBoxes("found");
                 sendResponse({ ok: true });
                 break;
             case "detailsBusy":
+                // Turned off when a run ends or stops
+                if (!message.on) stopFullPageScroll();
                 setBusyOverlay(!!message.on);
                 sendResponse({ ok: true });
                 break;
@@ -2559,9 +2705,21 @@
                             return;
                         }
                         var started = Date.now();
-                        waitForRunFields(fields, message).then(function(result) {
+                        var limitMs = Number(message.limitMs);
+                        var scroll = null;
+                        // "Load full page": scroll through the page first, within the page's time limit
+                        var scrolled = message.fullPage ? scrollThroughPage(limitMs >= 0 ? limitMs : 30000) : Promise.resolve(null);
+                        scrolled.then(function(result) {
+                            scroll = result;
+                            // The time spent scrolling counts in the Min wait and in the time limit
+                            var spent = Date.now() - started;
+                            return waitForRunFields(fields, Object.assign({}, message, {
+                                notBeforeMs: Math.max(0, (Number(message.notBeforeMs) || 0) - spent),
+                                limitMs: scroll && scroll.cancelled ? 0 : (limitMs >= 0 ? Math.max(0, limitMs - spent) : limitMs)
+                            }));
+                        }).then(function(result) {
                             sendResponse({ ok: true, status: status, url: window.location.href, values: result.values,
-                                complete: result.complete, late: result.late, waitedMs: Date.now() - started });
+                                complete: result.complete, late: result.late, waitedMs: Date.now() - started, scroll: scroll });
                         }).catch(function(e) {
                             sendResponse({ error: String(e && e.message || e) });
                         });
@@ -2644,14 +2802,6 @@
             clearAllHighlights();
             (async function scrollDownUntilNewRows(tableSelector, sendResponse) {
                 /**
-                 * Scrolls an element down at once. Pages that ask for smooth scrolling
-                 * (scroll-behavior: smooth) would otherwise only move it after an animation.
-                 * @param {Element} el - The element to scroll.
-                 * @param {number} amount - Amount to scroll in pixels.
-                 */
-                let scrollElementBy = (el, amount) => el.scrollBy({ top: amount, behavior: "instant" });
-
-                /**
                  * Attempts to scroll an element down by 50px and checks if it can scroll.
                  * @param {Element} el - The scrollable element.
                  * @returns {Promise<boolean>} True if the element has reached scroll threshold.
@@ -2660,7 +2810,7 @@
                     if (el.scrollTop + 5 >= 50) {
                         resolve(true);
                     } else {
-                        scrollElementBy(el, 50);
+                        scrollInstantly(el, 50);
                         setTimeout(() => {
                             resolve(el.scrollTop + 5 >= 50);
                         }, 10);
@@ -2674,7 +2824,7 @@
                  * @returns {Promise<void>}
                  */
                 let scrollByAmount = (el, amount) => new Promise((resolve) => {
-                    scrollElementBy(el, amount);
+                    scrollInstantly(el, amount);
                     setTimeout(() => { resolve(); }, 1000);
                 });
 
