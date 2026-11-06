@@ -1115,11 +1115,31 @@
     }
 
     /**
+     * Tells quickly whether an element holds some text, without rendering all of it (large
+     * containers are under the pointer too): stops at the first non-blank text node.
+     * @param {Element} element - Element.
+     * @returns {boolean} True when the element has text.
+     */
+    function hasSomeText(element) {
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+            return !!getElementText(element);
+        }
+        if (!(element instanceof HTMLElement)) return false;
+        var walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+            var parent = node.parentElement;
+            if (parent && /^(script|style|noscript|template)$/.test(parent.localName)) continue;
+            if (/\S/.test(node.data)) return true;
+        }
+        return false;
+    }
+
+    /**
      * Describes what clicking an element would add: its text, the link it is or is inside of,
-     * and the media that it is or that fills its box.
+     * and the media that it is or that fills its box. The text is only read when needed.
      * @param {Element} element - Element under the pointer.
-     * @returns {{element: Element, rect: DOMRect, text: string, linkElement: Element|null, link: string,
-     *     mediaElement: Element|null, image: string}} Description.
+     * @returns {{element: Element, rect: DOMRect, hasText: boolean, text: (string|null), linkElement: Element|null,
+     *     link: string, mediaElement: Element|null, image: string}} Description.
      */
     function describeElement(element) {
         var linkElement = getLinkElement(element);
@@ -1127,12 +1147,23 @@
         return {
             element: element,
             rect: element.getBoundingClientRect(),
-            text: getElementText(element),
+            hasText: hasSomeText(element),
+            text: null,
             linkElement: linkElement,
             link: linkElement ? getElementLink(linkElement) : "",
             mediaElement: mediaElement,
             image: mediaElement ? getElementImage(mediaElement) : ""
         };
+    }
+
+    /**
+     * Returns the rendered text of a described element (read once, then kept).
+     * @param {Object} info - Description (see describeElement).
+     * @returns {string} Text, or "".
+     */
+    function getInfoText(info) {
+        if (info.text === null) info.text = info.hasText ? getElementText(info.element) : "";
+        return info.text;
     }
 
     /**
@@ -1155,7 +1186,7 @@
         elements.forEach(function(element) {
             if (element === layer.host || element === document.documentElement || element === document.body) return;
             var info = describeElement(element);
-            if (!info.text && !info.link && !info.image) return;
+            if (!info.hasText && !info.link && !info.image) return;
             if (info.rect.width === 0 && info.rect.height === 0) return;
             var last = stack[stack.length - 1];
             if (last && areSameRects(last.rect, info.rect)) return;
@@ -1229,7 +1260,7 @@
         var cls = getFirstClass(info.element);
         var tag = createLayerElement("span", "tag", label);
         tag.textContent = info.element.localName + (cls ? "." + cls : "");
-        [["Text", info.text], ["Link", info.link], ["Image", info.image]].forEach(function(row) {
+        [["Text", getInfoText(info)], ["Link", info.link], ["Image", info.image]].forEach(function(row) {
             if (!row[1]) return;
             createLayerElement("span", "key", label).textContent = row[0];
             var value = createLayerElement("span", "val", label);
@@ -1273,7 +1304,7 @@
         var name = suggestFieldName(info.element);
         var added = 0;
         [
-            ["text", info.element, info.text, ""],
+            ["text", info.element, getInfoText(info), ""],
             ["link", info.linkElement, info.link, " link"],
             ["image", info.mediaElement, info.image, " image"]
         ].forEach(function(entry) {
