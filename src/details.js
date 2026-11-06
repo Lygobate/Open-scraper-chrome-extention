@@ -715,20 +715,6 @@
         }
     }
 
-    /**
-     * "Go to tab" button: brings the scraped tab to the front, or says why it cannot.
-     */
-    async function goToTargetTab() {
-        const result = await focusTargetTab();
-        if (result.ok) {
-            showMessage("detailsTabMessage", "");
-        } else if (result.error === "closed") {
-            showMessage("detailsTabMessage", "The scraped tab was closed. Open the page again and click the extension icon there.", "error");
-        } else {
-            showMessage("detailsTabMessage", "Unable to bring the scraped tab to the front: " + result.error, "error");
-        }
-    }
-
     // --- Templates ---
 
     /**
@@ -2311,7 +2297,6 @@
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
     $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
-    $id("detailsShowTab").addEventListener("click", goToTargetTab);
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
     $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
