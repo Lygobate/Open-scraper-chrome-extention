@@ -2009,10 +2009,20 @@
         const top = holder ? holder.scrollTop : 0;
         state.gridSize = size;
         state.grid.updateSettings({ width: size.width, height: size.height });
-        if (holder) {
-            holder.scrollLeft = left;
-            holder.scrollTop = top;
-        }
+        if (holder) setGridScroll(holder, left, top);
+    }
+
+    /**
+     * Scrolls the grid's cells and makes its row and column headers follow: the headers only
+     * move on a scroll event, which a position set to its current value does not fire.
+     * @param {HTMLElement} holder - Scrolling box of the grid's cells.
+     * @param {number} left - Horizontal position.
+     * @param {number} top - Vertical position.
+     */
+    function setGridScroll(holder, left, top) {
+        holder.scrollLeft = left;
+        holder.scrollTop = top;
+        holder.dispatchEvent(new Event("scroll"));
     }
 
     /**
@@ -2088,9 +2098,7 @@
         const left = holder ? holder.scrollLeft : 0;
         state.gridData.push(toGridRow(template, result));
         state.grid.render();
-        if (!holder) return;
-        if (atBottom) holder.scrollTop = holder.scrollHeight;
-        if (holder.scrollLeft !== left) holder.scrollLeft = left;
+        if (holder) setGridScroll(holder, left, atBottom ? holder.scrollHeight : holder.scrollTop);
     }
 
     /**
