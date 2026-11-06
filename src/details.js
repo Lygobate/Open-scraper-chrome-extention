@@ -14,6 +14,9 @@
     const ANSWER_TIMEOUT_MS = 10000;
     // Interval between two checks of a page being loaded
     const READY_POLL_MS = 100;
+    // After opening a URL, the page is not asked anything before its load begins or this delay
+    // has passed (a change of the #fragment only begins no load)
+    const LOAD_START_WAIT_MS = 300;
     // Longest wait for a field of the template to show in the test page before the preview
     const PREVIEW_WAIT_MS = 2000;
     // How long "show in page" highlights a field
@@ -588,13 +591,16 @@
                 return false;
             }
         }
+        // Right after the URL is set, the tab can still report "complete" while its page is
+        // already going away: asking it then fails, and Firefox logs that failure as an error
+        const askFrom = alreadyThere ? 0 : Date.now() + LOAD_START_WAIT_MS;
         // A page already shown but without a content script (opened before the extension) is reloaded once
         let reloadAt = alreadyThere ? Date.now() + 1000 : 0;
         try {
             while (Date.now() < deadline && !isCancelled()) {
                 const current = await getTargetTab();
                 if (!current) return false;
-                if (current.status === "complete") {
+                if (current.status === "complete" && (loadingSeen || Date.now() >= askFrom)) {
                     const response = await sendToTab(pingMessage);
                     if (response && isCancelled() && pingMessage.busy) sendToTab({ action: "detailsBusy", on: false });
                     const sameDocument = response && normalizeUrl(response.url) === target;
