@@ -478,14 +478,13 @@
         state.urls.slice(0, URL_LIST_LIMIT).forEach((value, index) => {
             const item = document.createElement("li");
             item.classList.toggle("is-skipped", !isUsableUrl(value.trim()));
-            const num = document.createElement("span");
-            num.className = "osd-url-num";
-            num.textContent = String(index + 1);
+            // The number is drawn by CSS (::before) so that copying the list gives only the values
+            item.dataset.num = String(index + 1);
             const text = document.createElement("span");
             text.className = "osd-url-value";
             text.textContent = value.trim() || "(empty)";
             text.title = item.classList.contains("is-skipped") ? "Not a page URL: skipped" : value.trim();
-            item.append(num, text);
+            item.append(text);
             fragment.appendChild(item);
         });
         if (state.urls.length > URL_LIST_LIMIT) {

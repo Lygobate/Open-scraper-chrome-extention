@@ -486,7 +486,9 @@ body.mode-details .details-panel {
     color: var(--text-primary);
 }
 
-.osd-url-num {
+/* Generated content: visible but never part of a selection or a copy */
+.osd-url-list li[data-num]::before {
+    content: attr(data-num);
     flex: 0 0 34px;
     text-align: right;
     color: var(--text-muted);
