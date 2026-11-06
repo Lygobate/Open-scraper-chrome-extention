@@ -1,31 +1,4 @@
 {
-   "optInFooter": {
-      "message": "Open Scraper operates 100% locally on your computer."
-   },
-   "optInPrivacyLinkText": {
-      "message": "Local Only"
-   },
-   "optInTermsLinkText": {
-      "message": "Zero Data Collection"
-   },
-   "optionsAgree": {
-      "message": "OK"
-   },
-   "optionsDisagree": {
-      "message": "Close"
-   },
-   "optionsDisagreeModalBody": {
-      "message": "Open Scraper runs entirely locally on your device. Your data is kept 100% private."
-   },
-   "optionsDisagreeModalContinue": {
-      "message": "Continue"
-   },
-   "optionsDisagreeModalEnable": {
-      "message": "Enable Presets"
-   },
-   "optionsDisagreeModalTitle": {
-      "message": "Privacy Info"
-   },
    "optionsPrivacyText": {
       "message": "Open Scraper runs entirely locally on your device. It does not collect, store, or transmit your scraped data, URLs visited, or search history. All operations are 100% private."
    },
@@ -41,50 +14,8 @@
    "optionsWelcomeTo": {
       "message": "Welcome to "
    },
-   "popupAdvancedFeaturesDisabled": {
-      "message": "Presets are disabled"
-   },
-   "popupApply": {
-      "message": "Apply"
-   },
-   "popupOptInSubtitle": {
-      "message": "Open Scraper identifies column tables and next buttons to help you extract data in one click."
-   },
-   "popupOptInTitlePart1": {
-      "message": "Private. "
-   },
-   "popupOptInTitlePart2": {
-      "message": "Local."
-   },
-   "popupOptInTitlePart3": {
-      "message": " Fast."
-   },
-   "popupOptOutConfirmTitle": {
-      "message": "Are you sure?"
-   },
-   "popupOptOutDowngrade": {
-      "message": "Downgrade"
-   },
-   "popupOptOutKeepFeatures": {
-      "message": "Keep"
-   },
    "popupPrivacyPolicy": {
       "message": "Privacy Policy"
-   },
-   "popupSavedConfigEmpty": {
-      "message": "No presets yet"
-   },
-   "popupSavedConfigPlaceholder": {
-      "message": "Presets"
-   },
-   "popupSettingsAdvancedFeatures": {
-      "message": "Local Configuration"
-   },
-   "popupSettingsDescription": {
-      "message": "Open Scraper processes data completely locally on your computer."
-   },
-   "popupSettingsTitle": {
-      "message": "Settings"
    },
    "popupTerms": {
       "message": "Terms"
