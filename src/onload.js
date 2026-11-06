@@ -462,6 +462,8 @@
     // Port kept open by the scraping window while it uses the page: when the window goes away,
     // the picker, highlights and overlay it left are removed
     var DETAILS_PORT_NAME = "openscraper-details-session";
+    // Identifies this document (a reload or a new page gets another one)
+    var DOCUMENT_TOKEN = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     // Attribute of the element that hosts everything this extension draws in the page
     var LAYER_ATTRIBUTE = "data-openscraper-layer";
     // Space between a highlighted element and its info label, and between the label and the window edges
@@ -1220,8 +1222,15 @@
      */
     function placeLayerBoxes() {
         if (!layer || !layerBoxes.length) return;
+        // Pages that rebuild their document can drop the layer: put it back
+        if (!layer.host.isConnected) document.documentElement.appendChild(layer.host);
         var origin = layer.host.getBoundingClientRect();
         layerBoxes.forEach(function(entry) {
+            // A field's element replaced by the page (late rendering) is found again
+            if (!entry.element.isConnected && entry.field) {
+                var again = resolveField(entry.field).element;
+                if (again) entry.element = again;
+            }
             var rect = entry.element.getBoundingClientRect();
             var hidden = !entry.element.isConnected || (rect.width === 0 && rect.height === 0);
             entry.box.style.display = hidden ? "none" : "block";
@@ -1239,8 +1248,8 @@
      * @param {"hover"|"picked"|"found"} kind - Box style.
      * @returns {Object} Box entry.
      */
-    function addLayerBox(element, kind) {
-        var entry = { element: element, kind: kind, box: createLayerElement("div", "box " + kind, getLayer().boxes) };
+    function addLayerBox(element, kind, field) {
+        var entry = { element: element, kind: kind, field: field || null, box: createLayerElement("div", "box " + kind, getLayer().boxes) };
         layerBoxes.push(entry);
         placeLayerBoxes();
         return entry;
@@ -1283,9 +1292,9 @@
      * Highlights found elements; when none of them is in the window, scrolls to the first one.
      * @param {Element[]} elements - Elements to show.
      */
-    function showFoundElements(elements) {
+    function showFoundElements(elements, fields) {
         clearLayerBoxes("found");
-        elements.forEach(function(element) { addLayerBox(element, "found"); });
+        elements.forEach(function(element, index) { addLayerBox(element, "found", fields && fields[index]); });
         if (elements.length && !elements.some(isInViewport)) {
             elements[0].scrollIntoView({ block: "center", inline: "center" });
             placeLayerBoxes();
@@ -1809,12 +1818,16 @@
      */
     function highlightFields(fields) {
         var found = [];
+        var foundFields = [];
         var flags = fields.map(function(field) {
             var element = resolveField(field).element;
-            if (element && found.indexOf(element) === -1) found.push(element);
+            if (element && found.indexOf(element) === -1) {
+                found.push(element);
+                foundFields.push(field);
+            }
             return !!element;
         });
-        showFoundElements(found);
+        showFoundElements(found, foundFields);
         return flags;
     }
 
@@ -1849,13 +1862,13 @@
         switch (message.action) {
             case "detailsPing":
                 if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
-                sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus() });
+                sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus(), doc: DOCUMENT_TOKEN });
                 break;
             case "detailsPickerStart":
                 clearLayerBoxes("found");
                 setBusyOverlay(false);
                 startFieldPicker();
-                sendResponse({ ok: true, url: window.location.href });
+                sendResponse({ ok: true, url: window.location.href, doc: DOCUMENT_TOKEN });
                 break;
             case "detailsPickerPoll":
                 // Long poll: answered at once if something changed, else on the next pick or stop
@@ -1877,6 +1890,7 @@
                             sendResponse({
                                 ok: true,
                                 url: window.location.href,
+                                doc: DOCUMENT_TOKEN,
                                 values: extractPageDetails(fields),
                                 found: message.highlight === false ? [] : highlightFields(fields)
                             });
@@ -1891,13 +1905,13 @@
                 (function(field) {
                     var element = resolveField(field).element;
                     if (element) {
-                        showFoundElements([element]);
+                        showFoundElements([element], [field]);
                         var entry = layerBoxes[layerBoxes.length - 1];
                         setTimeout(function() {
                             removeLayerBoxes(function(box) { return box === entry; });
                         }, Math.max(200, message.durationMs || 1000));
                     }
-                    sendResponse({ ok: true, found: !!element });
+                    sendResponse({ ok: true, found: !!element, doc: DOCUMENT_TOKEN });
                 })(message.field);
                 break;
             case "detailsClearHighlights":

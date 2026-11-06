@@ -649,7 +649,7 @@ body.mode-details .details-panel {
 
 .osd-preview-value.is-missing {
     font-style: italic;
-    color: var(--text-muted);
+    color: var(--accent-amber);
 }
 
 .osd-preview-table td.osd-preview-remove {

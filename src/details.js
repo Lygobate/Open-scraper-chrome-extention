@@ -25,6 +25,8 @@
     // before the grid follows a change of the window size
     const GRID_BOTTOM_SPACE = 36;
     const GRID_FIT_DELAY_MS = 100;
+    // Delay after the target tab finished loading a page before step 2 previews it again
+    const PAGE_WATCH_DELAY_MS = 300;
     // How long "show in page" highlights a field
     const SHOW_FIELD_MS = 1000;
 
@@ -89,6 +91,10 @@
         gridData: [],
         gridKey: "",
         port: null,
+        portDoc: "",
+        previewDoc: "",
+        pageWatchTimer: 0,
+        previewLoading: false,
         promptAction: null,
         columnPromptAction: null,
         waitSaveTimer: 0
@@ -505,11 +511,16 @@
     }
 
     /**
-     * Opens a fresh port with the page so that it removes what this window drew there when the
-     * window closes. The previous port is closed after the new one is open.
+     * Opens a port with the page so that it removes what this window drew there when the
+     * window closes. A port already open with the same document is kept: closing it right
+     * after opening another one could reach the page first, and the page would then remove
+     * the highlights it just drew. The previous port is closed after the new one is open.
+     * @param {string} [doc] - Token of the page's document, when known.
      */
-    function connectSessionPort() {
+    function connectSessionPort(doc) {
+        if (doc && state.port && state.portDoc === doc) return;
         const previous = state.port;
+        state.portDoc = doc || "";
         try {
             const port = chromeInstance.tabs.connect(targetTabId, { name: DETAILS_PORT_NAME });
             port.onDisconnect.addListener(() => {
@@ -616,7 +627,7 @@
                     if (response && isCancelled() && pingMessage.busy) sendToTab({ action: "detailsBusy", on: false });
                     const sameDocument = response && normalizeUrl(response.url) === target;
                     if (response && response.ready && (alreadyThere || loaded || sameDocument)) {
-                        connectSessionPort();
+                        connectSessionPort(response.doc);
                         return true;
                     }
                     if (!response && reloadAt && Date.now() > reloadAt) {
@@ -1250,10 +1261,12 @@
     }
 
     /**
-     * Loads the test page if needed, waits for a field to show, reads one row and highlights
-     * the elements found in the page.
+     * Loads the test page if needed, reads one row (at once, then again once late fields show)
+     * and highlights in the page the elements found.
+     * @param {{shownPage: boolean}} [options] - shownPage: read the page shown in the tab as it
+     *     is (the user opened another page of the site there) instead of the test page.
      */
-    async function refreshPreview() {
+    async function refreshPreview(options) {
         const token = ++state.previewToken;
         const template = getSelectedTemplate();
         const box = $id("detailsPreview");
@@ -1265,7 +1278,13 @@
         renderPreviewRows(template, null);
         $id("detailsPreviewStatus").textContent = "Loading the test page…";
         const isCancelled = () => token !== state.previewToken;
-        const ready = await ensureTestPage(isCancelled);
+        state.previewLoading = true;
+        let ready;
+        try {
+            ready = options && options.shownPage ? true : await ensureTestPage(isCancelled);
+        } finally {
+            if (!isCancelled()) state.previewLoading = false;
+        }
         if (isCancelled()) return;
         if (!ready) {
             $id("detailsPreviewStatus").textContent = "The test page does not answer";
@@ -1281,13 +1300,40 @@
                 $id("detailsPreviewStatus").textContent = "The test page does not answer";
                 return;
             }
-            connectSessionPort();
+            connectSessionPort(response.doc);
+            state.previewDoc = response.doc || "";
             const found = response.values.filter(value => value).length;
             const complete = found === template.fields.length;
             $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found" +
                 (complete || waitMs ? "" : " · waiting for the others…");
             renderPreviewRows(template, response.values);
             if (complete) return;
+        }
+    }
+
+    /**
+     * Previews again a page that the target tab loaded on its own while the fields step is
+     * shown (reload, link followed, address typed): one of the URLs to visit becomes the test
+     * page; another page of the template's site is read as it is.
+     */
+    async function onTargetPageLoaded() {
+        state.pageWatchTimer = 0;
+        const template = getSelectedTemplate();
+        if (state.step !== 2 || isBusy() || !template || state.previewLoading || !document.body.classList.contains(DETAILS_MODE_CLASS)) return;
+        const response = await sendToTabWithRetry({ action: "detailsPing" }, ANSWER_TIMEOUT_MS);
+        if (!response || !response.doc || response.doc === state.previewDoc || state.step !== 2 || isBusy() || state.previewLoading) return;
+        const index = state.validUrls.map(normalizeUrl).indexOf(normalizeUrl(response.url));
+        if (index >= 0) {
+            if (index !== state.testIndex) {
+                state.testIndex = index;
+                updateTestUrlUi();
+                const changed = chooseTemplateForDomain();
+                renderTemplateSelect();
+                if (changed) return;
+            }
+            refreshPreview();
+        } else if (getRegistrableDomain(response.url) === template.domain) {
+            refreshPreview({ shownPage: true });
         }
     }
 
@@ -1389,7 +1435,7 @@
             endPicking(token, "The page does not answer. Reload it, or open a regular web page, then try again.", "error");
             return;
         }
-        connectSessionPort();
+        connectSessionPort(started.doc);
         showMessage("detailsPickMessage", "Click the data to extract in the page, then click Finish.");
         pollPicks(token);
     }
@@ -1611,6 +1657,7 @@
         }
         if (state.nextIndex >= state.urls.length) resetResults();
 
+        sendToTab({ action: "detailsClearHighlights" });
         const runId = ++state.runId;
         const stopped = new Promise(resolve => { state.resolveStop = resolve; });
         const isStopped = () => runId !== state.runId;
@@ -1909,7 +1956,7 @@
     async function showFieldInPage(field) {
         await focusTargetTab();
         const response = await sendToTab({ action: "detailsShowField", field: { kind: field.kind, selectors: field.selectors }, durationMs: SHOW_FIELD_MS });
-        if (response) connectSessionPort();
+        if (response) connectSessionPort(response.doc);
         if (!response || !response.found) {
             showMessage("detailsExportMessage", "Not found in the page shown in the tab.", "warning");
         } else {
@@ -2038,6 +2085,11 @@
     });
 
     window.addEventListener("resize", scheduleGridFit);
+    chromeInstance.tabs.onUpdated.addListener((tabId, changeInfo) => {
+        if (tabId !== targetTabId || changeInfo.status !== "complete" || state.step !== 2) return;
+        clearTimeout(state.pageWatchTimer);
+        state.pageWatchTimer = setTimeout(onTargetPageLoaded, PAGE_WATCH_DELAY_MS);
+    });
     $id("detailsOptions").addEventListener("toggle", scheduleGridFit);
 
     // The window holds the results in memory only: confirm before closing it during a run
