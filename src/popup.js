@@ -714,6 +714,7 @@
                     scrapingState.tableSelector = response.tableSelector;
                     scrapingState.workingTime = 0;
                     scrapingState.firstRows = response.data.length;
+                    scrapingState.uncountedRows = 0;
 
                     applyMoreRowsMode();
                     $(".download-button").show();
@@ -773,6 +774,7 @@
         scrapingState.scraping = false;
         scrapingState.runId = (scrapingState.runId || 0) + 1;
         if (scrapingState.pageRound) scrapingState.roundCut = true;
+        if (scrapingState.roundPending) scrapingState.loadMoreCut = true;
         scrapingState.pageRound = scrapingState.roundPending = false;
         console.log("Scraping stopped.");
         $("#stopScraping").hide();
@@ -786,11 +788,12 @@
     /**
      * Updates the scraping information values displayed in the #stats container.
      * "Load more" counts rounds (clicks that brought rows) instead of pages.
-     * Speed: rows added by crawling (beyond the first read) per minute of working time.
+     * Speed: rows added by crawling (beyond the first read) per minute of working time,
+     * leaving out the rows whose round was not timed (see crawlWithLoadMore).
      */
     function updateUiStats() {
         const byRound = getMoreRowsMode() === "loadMore";
-        const addedRows = scrapingState.data.length - scrapingState.firstRows;
+        const addedRows = scrapingState.data.length - scrapingState.firstRows - scrapingState.uncountedRows;
         const speed = addedRows > 0 && scrapingState.workingTime > 0
             ? (addedRows * 60000 / scrapingState.workingTime).toFixed(1) + " rows / min" : "\u2013";
         $("#stats")
@@ -812,9 +815,15 @@
      */
     function crawlWithLoadMore(runId) {
         let startTime = new Date();
+        // A round cut by Stop is not timed, but its click may still bring rows: the first round
+        // after it then reads them without clicking (it answers before Min delay). Those rows
+        // are collected but left out of the speed.
+        let afterCut = scrapingState.loadMoreCut;
+        scrapingState.loadMoreCut = false;
 
         !function loadMoreRound() {
             const round = scrapingState.loadRounds + 1;
+            const minWait = scrapingState.config.crawlDelay;
             scrapingState.roundPending = true;
             chromeInstance.tabs.sendMessage(
                 currentTab.id,
@@ -823,14 +832,17 @@
                     selector: scrapingState.loadMoreSelector,
                     tableSelector: scrapingState.tableSelector,
                     rowCount: scrapingState.rowCount,
-                    minWait: scrapingState.config.crawlDelay,
+                    minWait: minWait,
                     maxWait: scrapingState.config.maxWait
                 },
                 function(response) {
                     void chromeInstance.runtime.lastError;
                     if (runId !== scrapingState.runId) return;
                     scrapingState.roundPending = false;
-                    scrapingState.workingTime += new Date() - startTime;
+                    const roundTime = new Date() - startTime;
+                    const untimedRows = afterCut && roundTime < minWait;
+                    afterCut = false;
+                    scrapingState.workingTime += roundTime;
                     startTime = new Date();
 
                     if (!response || response.error) {
@@ -849,6 +861,7 @@
                         scrapingState.rowCount = response.rowCount;
                         scrapingState.loadRounds = round;
                         scrapingState.lastRows = scrapingState.data.length - collectedBefore;
+                        if (untimedRows) scrapingState.uncountedRows += scrapingState.lastRows;
                         updateUiStats();
                         if (scrapingState.previewLength < PREVIEW_LIMIT) {
                             renderHandsontable();
