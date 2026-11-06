@@ -547,9 +547,11 @@
 
     /**
      * Opens a URL in the target tab and waits until the page has loaded and its content script
-     * answers, with a time limit. When the tab already shows that exact URL, the page is only
-     * asked whether it is ready; a change of the #fragment only is detected by the address
-     * the page reports, so it never waits for a load that does not happen.
+     * answers, with a time limit. The new page counts as loaded once the tab reported "loading"
+     * then "complete" (the tab status alone can still describe the previous page for a moment,
+     * whose content script would answer). When the tab already shows that exact URL, the page
+     * is only asked whether it is ready; a change of the #fragment only is detected by the
+     * address the page reports, so it never waits for a load that does not happen.
      * @param {string} url - Address to open.
      * @param {number} limitMs - Longest wait.
      * @param {{isCancelled: Function, busy: boolean}} [options] - Give up early; show the
@@ -565,9 +567,16 @@
         const tab = await getTargetTab();
         if (!tab) return false;
 
-        let navigated = false;
+        let loadingSeen = false;
+        let loaded = false;
         const onUpdated = (tabId, changeInfo) => {
-            if (tabId === targetTabId && (changeInfo.status === "loading" || changeInfo.url)) navigated = true;
+            if (tabId !== targetTabId) return;
+            if (changeInfo.status === "loading") {
+                loadingSeen = true;
+                loaded = false;
+            } else if (changeInfo.status === "complete" && loadingSeen) {
+                loaded = true;
+            }
         };
         let alreadyThere = normalizeUrl(tab.url) === target && !tab.pendingUrl;
         if (!alreadyThere) {
@@ -589,7 +598,7 @@
                     const response = await sendToTab(pingMessage);
                     if (response && isCancelled() && pingMessage.busy) sendToTab({ action: "detailsBusy", on: false });
                     const sameDocument = response && normalizeUrl(response.url) === target;
-                    if (response && response.ready && (alreadyThere || navigated || sameDocument)) {
+                    if (response && response.ready && (alreadyThere || loaded || sameDocument)) {
                         connectSessionPort();
                         return true;
                     }
