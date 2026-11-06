@@ -75,7 +75,9 @@
         pickToken: 0,
         picks: [],
         pickTemplateId: "",
-
+        previewValues: null,
+        renaming: false,
+        previewUrl: "",
         emptyCounts: null,
         gridSize: null,
         gridFitTimer: 0,
@@ -977,6 +979,12 @@
         }
         renderTemplateSelect();
         updateFieldsStepUi();
+        const template = getSelectedTemplate();
+        if (state.step === 2 && template && !$id("detailsPreview").hidden) {
+            // Names may have changed (here, in the grid or in another window)
+            const values = state.previewValues && state.previewValues.length === template.fields.length ? state.previewValues : null;
+            if (values || !state.previewValues) renderPreviewRows(template, values);
+        }
         if (state.step === 3) renderRunHeader();
         rebuildGridIfNeeded();
     }
@@ -1328,6 +1336,7 @@
             return;
         }
         box.hidden = false;
+        state.previewUrl = "";
         renderPreviewRows(template, null);
         $id("detailsPreviewStatus").textContent = "Loading the test page…";
         const isCancelled = () => token !== state.previewToken;
@@ -1355,6 +1364,7 @@
             }
             connectSessionPort(response.doc);
             state.previewDoc = response.doc || "";
+            state.previewUrl = response.url || "";
             const found = response.values.filter(value => value).length;
             const complete = found === template.fields.length;
             $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found" +
@@ -1391,48 +1401,137 @@
     }
 
     /**
-     * Draws the preview table: kind, column name, value read in the test page.
+     * Draws the preview table: the URL column, then one row per field with its kind, column
+     * name (renamable), value read in the test page and a remove button. Not redrawn while a
+     * name is being edited (it is drawn again when the edit ends).
      * @param {Object} template - Template.
      * @param {string[]|null} values - Values, or null while loading.
      */
     function renderPreviewRows(template, values) {
+        state.previewValues = values;
+        if (state.renaming) return;
         const body = $id("detailsPreviewBody");
         body.textContent = "";
-        template.fields.forEach((field, index) => {
+        const columns = getResultColumns(template);
+        const addRow = (kindKey, kindLabel, key, name, value, missing, field) => {
             const row = document.createElement("tr");
             const kindCell = document.createElement("td");
             kindCell.className = "osd-preview-kind";
             const kind = document.createElement("span");
-            kind.className = "osd-kind osd-kind-" + field.kind;
-            kind.textContent = KIND_LABELS[field.kind];
+            kind.className = "osd-kind osd-kind-" + kindKey;
+            kind.textContent = kindLabel;
             kindCell.appendChild(kind);
 
             const nameCell = document.createElement("td");
             nameCell.className = "osd-preview-name";
-            nameCell.textContent = getFieldColumnName(template, field);
-            nameCell.title = field.selectors.join("\n");
+            const nameText = document.createElement("span");
+            nameText.className = "osd-preview-name-text";
+            nameText.textContent = name;
+            nameText.title = field ? name + "\n" + field.selectors.join("\n") : name;
+            const rename = document.createElement("button");
+            rename.type = "button";
+            rename.className = "osd-btn osd-btn-icon osd-rename";
+            rename.textContent = "✎";
+            rename.title = "Rename this column";
+            rename.setAttribute("aria-label", "Rename column " + name);
+            rename.disabled = isBusy();
+            rename.addEventListener("click", () => startRename(nameCell, template.id, key, name));
+            nameCell.append(nameText, rename);
 
             const valueCell = document.createElement("td");
-            const value = values ? values[index] || "" : "";
-            valueCell.className = "osd-preview-value" + (values && !value ? " is-missing" : "");
-            valueCell.textContent = values ? value || "Not found" : "…";
+            valueCell.className = "osd-preview-value" + (missing ? " is-missing" : "");
+            valueCell.textContent = values === null ? "…" : (missing ? "Not found" : value);
             valueCell.title = value;
 
             const removeCell = document.createElement("td");
             removeCell.className = "osd-preview-remove";
-            const remove = document.createElement("button");
-            remove.type = "button";
-            remove.className = "osd-btn osd-btn-icon";
-            remove.textContent = "×";
-            remove.title = "Remove this field from the template";
-            remove.setAttribute("aria-label", "Remove field " + getFieldColumnName(template, field));
-            remove.disabled = template.fields.length < 2 || isBusy();
-            remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
-            removeCell.appendChild(remove);
-
+            if (field) {
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "osd-btn osd-btn-icon";
+                remove.textContent = "×";
+                remove.title = "Remove this field from the template";
+                remove.setAttribute("aria-label", "Remove field " + name);
+                remove.disabled = template.fields.length < 2 || isBusy();
+                remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
+                removeCell.appendChild(remove);
+            }
             row.append(kindCell, nameCell, valueCell, removeCell);
             body.appendChild(row);
+        };
+        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null);
+        template.fields.forEach((field, index) => {
+            const value = values ? values[index] || "" : "";
+            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field);
         });
+    }
+
+    /**
+     * Saves a column name in the template (the one name used by the preview, the grid and the
+     * exports). Empty names are refused; a name used by another column gets " (2)"...
+     * @param {string} templateId - Template id.
+     * @param {string} key - Field id, or "url" for the URL column.
+     * @param {string} name - Wanted name.
+     * @returns {Promise<boolean>} True when saved.
+     */
+    async function renameColumn(templateId, key, name) {
+        const wanted = String(name || "").trim().slice(0, 120);
+        if (!wanted) return false;
+        return updateTemplate(templateId, template => {
+            const keys = ["url"].concat(template.fields.map(field => field.id));
+            const others = new Set(getResultColumns(template).filter((_, col) => keys[col] !== key));
+            let unique = wanted;
+            for (let n = 2; others.has(unique); n++) unique = wanted + " (" + n + ")";
+            template.renames[key] = unique;
+        });
+    }
+
+    /**
+     * Turns a column name of the preview into a text box: Enter or leaving it saves, Escape
+     * cancels, an empty name is refused.
+     * @param {HTMLElement} cell - Name cell.
+     * @param {string} templateId - Template id.
+     * @param {string} key - Field id, or "url".
+     * @param {string} current - Current name.
+     */
+    function startRename(cell, templateId, key, current) {
+        if (state.renaming || isBusy()) return;
+        state.renaming = true;
+        cell.textContent = "";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "osd-input osd-rename-input";
+        input.maxLength = 120;
+        input.value = current;
+        input.setAttribute("aria-label", "Column name");
+        cell.appendChild(input);
+        let done = false;
+        const finish = async save => {
+            if (done) return;
+            done = true;
+            const name = input.value.trim();
+            if (save && !name) showMessage("detailsPickMessage", "A column name cannot be empty: the name was kept.", "warning");
+            if (save && name && name !== current) {
+                await renameColumn(templateId, key, name);
+                showMessage("detailsPickMessage", "");
+            }
+            state.renaming = false;
+            const template = getSelectedTemplate();
+            if (template) renderPreviewRows(template, state.previewValues);
+        };
+        input.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                finish(true);
+            } else if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                finish(false);
+            }
+        });
+        input.addEventListener("blur", () => finish(true));
+        input.focus();
+        input.select();
     }
 
     /**
@@ -2011,8 +2110,7 @@
         if (button.dataset.colAction === "rename") {
             const current = getResultColumns(template)[col];
             openPrompt("detailsColumnPrompt", "Column name", current, "Save", name => {
-                if (!name) return;
-                updateTemplate(template.id, t => { t.renames[field ? field.id : "url"] = name.slice(0, 120); });
+                if (name) renameColumn(template.id, field ? field.id : "url", name);
             });
         } else if (field) {
             showFieldInPage(field);

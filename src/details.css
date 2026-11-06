@@ -643,6 +643,35 @@ body.mode-details .details-panel {
     color: var(--text-primary);
 }
 
+.osd-preview-name-text {
+    display: inline-block;
+    max-width: calc(100% - 28px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+.osd-preview-name .osd-rename {
+    width: 22px;
+    height: 22px;
+    margin-left: 4px;
+    font-size: 12px;
+    vertical-align: middle;
+    color: var(--text-muted);
+    background: transparent;
+    border-color: transparent;
+}
+.osd-preview-name .osd-rename:hover:not(:disabled) {
+    color: var(--accent-teal);
+    border-color: var(--border-glass-hover);
+}
+.osd-rename-input {
+    width: 100%;
+    height: 24px;
+}
+.osd-kind-url {
+    color: var(--text-secondary);
+    background: var(--bg-glass-hover);
+}
 .osd-preview-value {
     color: var(--text-secondary);
 }
