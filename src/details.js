@@ -21,6 +21,8 @@
     // yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
     // every field are read at once.
     const LATE_FIELDS_WAIT_MS = 5000;
+    // Longest wait for the page shown to tell which document it is, before a run opens the next URL
+    const OLD_DOCUMENT_PING_MS = 500;
     // Space kept under the results grid (paddings of the panel and of the step), and the delay
     // before the grid follows a change of the window size
     const GRID_BOTTOM_SPACE = 36;
@@ -583,14 +585,19 @@
      * whose content script would answer). When the tab already shows that exact URL, the page
      * is only asked whether it is ready; a change of the #fragment only is detected by the
      * address the page reports, so it never waits for a load that does not happen.
+     * With the early option (runs), the page counts as ready as soon as it is parsed and its
+     * content script answers, without waiting for its images, frames or ads: the document that
+     * answers must then be another one than the page shown before (asked first), or be at the
+     * address opened; else the load must have completed as above.
      * @param {string} url - Address to open.
      * @param {number} limitMs - Longest wait.
-     * @param {{isCancelled: Function, busy: boolean}} [options] - Give up early; show the
-     *     "Extracting..." overlay in the page as soon as it answers.
+     * @param {{isCancelled: Function, busy: boolean, early: boolean}} [options] - Give up early;
+     *     show the "Extracting..." overlay in the page as soon as it answers; ready once parsed.
      * @returns {Promise<boolean>} True when the page is ready.
      */
     async function loadPage(url, limitMs, options) {
         const isCancelled = options && options.isCancelled || (() => false);
+        const early = !!(options && options.early);
         const pingMessage = { action: "detailsPing" };
         if (options && options.busy) pingMessage.busy = true;
         const deadline = Date.now() + Math.max(READY_POLL_MS, limitMs);
@@ -610,6 +617,14 @@
             }
         };
         let alreadyThere = normalizeUrl(tab.url) === target && !tab.pendingUrl;
+        // While the new page loads, the page shown keeps answering: its document is noted first
+        // (undefined: it has no content script, so any answer comes from the new page; null: unknown)
+        let oldDoc = null;
+        if (early && !alreadyThere) {
+            const before = await Promise.race([sendToTab({ action: "detailsPing" }), sleep(OLD_DOCUMENT_PING_MS).then(() => null)]);
+            oldDoc = before === null ? null : (before && before.doc) || undefined;
+            if (isCancelled()) return false;
+        }
         if (!alreadyThere) {
             chromeInstance.tabs.onUpdated.addListener(onUpdated);
             try {
@@ -628,11 +643,13 @@
             while (Date.now() < deadline && !isCancelled()) {
                 const current = await getTargetTab();
                 if (!current) return false;
-                if (current.status === "complete" && (loadingSeen || Date.now() >= askFrom)) {
+                if ((early || current.status === "complete") && (loadingSeen || Date.now() >= askFrom)) {
                     const response = await sendToTab(pingMessage);
                     if (response && isCancelled() && pingMessage.busy) sendToTab({ action: "detailsBusy", on: false });
                     const sameDocument = response && normalizeUrl(response.url) === target;
-                    if (response && response.ready && (alreadyThere || loaded || sameDocument)) {
+                    const newDocument = response && early && oldDoc !== null && response.doc !== oldDoc &&
+                        response.readyState !== "loading";
+                    if (response && response.ready && (alreadyThere || loaded || sameDocument || newDocument)) {
                         connectSessionPort(response.doc);
                         return true;
                     }
@@ -1843,22 +1860,30 @@
             const url = state.urls[index].trim();
             const row = { url: state.urls[index], values: {}, failed: false };
             if (isUsableUrl(url)) {
-                // The page takes at least Min seconds and at most about Max seconds to load
+                // The page takes at least Min seconds and at most about Max seconds. It is read
+                // once parsed: the content script waits for Min and for the fields drawn late.
                 const wait = getWait();
                 const pageStart = Date.now();
                 const limitMs = Math.max(1, wait.max) * 1000;
-                const [ready] = await Promise.race([
-                    Promise.all([loadPage(url, limitMs, { isCancelled: isStopped, busy: true }), sleep(wait.min * 1000)]),
-                    stopped.then(() => [false])
+                const minEnd = pageStart + wait.min * 1000;
+                const ready = await Promise.race([
+                    loadPage(url, limitMs, { isCancelled: isStopped, busy: true, early: true }),
+                    stopped.then(() => false)
                 ]);
                 if (isStopped()) return;
                 let response;
                 if (ready) {
-                    const waitMs = Math.max(0, Math.min(LATE_FIELDS_WAIT_MS, limitMs - (Date.now() - pageStart)));
                     response = await Promise.race([
-                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, waitMs: waitMs }, 2000, isStopped),
+                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true,
+                            notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: LATE_FIELDS_WAIT_MS,
+                            limitMs: Math.max(0, pageStart + limitMs - Date.now()) }, 2000, isStopped),
                         stopped.then(() => undefined)
                     ]);
+                    if (isStopped()) return;
+                }
+                if (Date.now() < minEnd) {
+                    // Error page or no answer: the page still takes Min seconds
+                    await Promise.race([sleep(minEnd - Date.now()), stopped]);
                     if (isStopped()) return;
                 }
                 if (response && response.ok && Array.isArray(response.values)) {
