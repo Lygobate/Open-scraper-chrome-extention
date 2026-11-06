@@ -451,6 +451,8 @@
     // content (alt, title, aria-label: often the product name) are left out: on another page
     // they miss, or match another element that shows the sample's content (related items).
     var DESCRIPTIVE_ATTRIBUTES = ["itemprop", "role", "name", "placeholder", "type"];
+    // A class made of a word and a small number ("note2", "col-6") names a role, not a build
+    var NUMBERED_CLASS_PATTERN = /^[a-zA-Z][a-zA-Z_-]*[a-zA-Z][-_]?\d{1,2}$/;
     var MAX_FIELD_SELECTORS = 3;
     var MAX_ANCESTOR_DEPTH = 6;
     var MAX_SELECTOR_TRIES = 1000;
@@ -460,6 +462,8 @@
     // Port kept open by the scraping window while it uses the page: when the window goes away,
     // the picker, highlights and overlay it left are removed
     var DETAILS_PORT_NAME = "openscraper-details-session";
+    // Identifies this document (a reload or a new page gets another one)
+    var DOCUMENT_TOKEN = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     // Attribute of the element that hosts everything this extension draws in the page
     var LAYER_ATTRIBUTE = "data-openscraper-layer";
     // Space between a highlighted element and its info label, and between the label and the window edges
@@ -468,6 +472,11 @@
     var LABEL_VALUE_LENGTH = 200;
     // Boxes are placed again at this interval while shown, for pages that move on their own
     var BOX_REFRESH_MS = 500;
+    // Interval between two looks for the template's fields not found yet in the page, while
+    // the picker shows them to edit the template
+    var EXISTING_FIELDS_CHECK_MS = 400;
+    // Pixels scrolled per wheel "line" (wheels that report lines instead of pixels)
+    var WHEEL_LINE_PX = 40;
 
     var LAYER_STYLE =
         ":host{all:initial}" +
@@ -535,22 +544,164 @@
         return (text || "").replace(/\s+/g, " ").trim();
     }
 
+    // Named HTML entities decoded when a page shows them as text ("&amp;nbsp;" in the HTML,
+    // or a string set as text by a script, displays as "&nbsp;")
+    var TEXT_ENTITIES = {
+        nbsp: "\u00a0", amp: "&", AMP: "&", quot: '"', QUOT: '"', apos: "'", lt: "<", LT: "<", gt: ">", GT: ">",
+        ensp: "\u2002", emsp: "\u2003", thinsp: "\u2009", ndash: "\u2013", mdash: "\u2014", hellip: "\u2026",
+        lsquo: "\u2018", rsquo: "\u2019", ldquo: "\u201c", rdquo: "\u201d", laquo: "\u00ab", raquo: "\u00bb",
+        euro: "\u20ac", copy: "\u00a9", reg: "\u00ae", trade: "\u2122"
+    };
+    // An entity name is read whole ("&copyright" is not "&copy"), the final semicolon is optional
+    var TEXT_ENTITY_PATTERN = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z]{2,8}));?/g;
+
+    /**
+     * Decodes the HTML entities left as text in a value (double-escaped pages), with a fixed
+     * table: page text is never parsed as HTML. Repeated for "&amp;amp;nbsp;"-like chains.
+     * @param {string} text - Raw text.
+     * @returns {string} Decoded text.
+     */
+    function decodeTextEntities(text) {
+        var decode = function(match, decimal, hex, name) {
+            if (name) {
+                if (Object.prototype.hasOwnProperty.call(TEXT_ENTITIES, name)) return TEXT_ENTITIES[name];
+                // "&nbspVAT": like the HTML parser, a leading "nbsp" without semicolon still counts
+                return name.indexOf("nbsp") === 0 && match.slice(-1) !== ";" ? "\u00a0" + name.slice(4) : match;
+            }
+            var code = decimal ? parseInt(decimal, 10) : parseInt(hex, 16);
+            if (!(code > 0 && code <= 0x10ffff) || (code >= 0xd800 && code <= 0xdfff)) return match;
+            return String.fromCodePoint(code);
+        };
+        var result = text || "";
+        for (var pass = 0; pass < 3 && result.indexOf("&") !== -1; pass++) {
+            var next = result.replace(TEXT_ENTITY_PATTERN, decode);
+            if (next === result) break;
+            result = next;
+        }
+        return result;
+    }
+
+    /**
+     * Cleans a text value: entities shown as text are decoded, non-breaking and other Unicode
+     * spaces become plain spaces, whitespace is collapsed and trimmed.
+     * @param {string} text - Raw text.
+     * @returns {string} Clean text.
+     */
+    function cleanText(text) {
+        return normalizeWhitespace(decodeTextEntities(text).replace(/[\u00a0\u202f\u2007\u2000-\u200a]/g, " "));
+    }
+
     /**
      * Reads the visible text of an element: typed value for form fields, chosen label for a
      * drop-down list, rendered text otherwise. Non-HTML elements (SVG) have no text.
      * @param {Element} element - Element to read.
-     * @returns {string} Normalized text, or "".
+     * @returns {string} Clean text (see cleanText), or "".
      */
     function getElementText(element) {
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-            return normalizeWhitespace(element.value);
+            return cleanText(element.value);
         }
         if (element instanceof HTMLSelectElement) {
             var option = element.options[element.selectedIndex];
-            return option ? normalizeWhitespace(option.text) : "";
+            return option ? cleanText(option.text) : "";
         }
         if (!(element instanceof HTMLElement)) return "";
-        return normalizeWhitespace(element.innerText);
+        return cleanText(readRenderedText(element));
+    }
+
+    // Beyond this many text nodes, the text of an element is read with innerText (large blocks)
+    var MAX_TEXT_NODES = 400;
+    // Parents whose text is never shown
+    var HIDDEN_TEXT_PARENTS = /^(script|style|noscript|template|title)$/;
+
+    /**
+     * Lists the rendered text pieces of an element, in document order, with their boxes.
+     * @param {Element} element - Element to read.
+     * @returns {Array<Object>|null} Pieces {text, first, last, size}, or null when the
+     *     element has too many text nodes to be read this way.
+     */
+    function getTextPieces(element) {
+        var styles = new Map();
+        var styleOf = function(node) {
+            if (!styles.has(node)) styles.set(node, getComputedStyle(node));
+            return styles.get(node);
+        };
+        var pieces = [];
+        var range = document.createRange();
+        var walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        var count = 0;
+        for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (++count > MAX_TEXT_NODES) return null;
+            var parent = node.parentElement;
+            if (!parent || HIDDEN_TEXT_PARENTS.test(parent.localName) || !node.data) continue;
+            var style = styleOf(parent);
+            if (style.visibility !== "visible") continue;
+            range.selectNodeContents(node);
+            var rects = Array.prototype.filter.call(range.getClientRects(), function(rect) { return rect.width > 0 || rect.height > 0; });
+            // Not rendered (inside display:none) or whitespace collapsed away
+            if (!rects.length) continue;
+            var text = node.data;
+            if (style.textTransform === "uppercase") text = text.toUpperCase();
+            else if (style.textTransform === "lowercase") text = text.toLowerCase();
+            else if (style.textTransform === "capitalize") text = text.replace(/(^|\s)(\S)/g, function(m, space, ch) { return space + ch.toUpperCase(); });
+            pieces.push({
+                text: /\S/.test(text) ? text : " ",
+                first: rects[0],
+                last: rects[rects.length - 1],
+                size: parseFloat(style.fontSize) || 16
+            });
+        }
+        return pieces;
+    }
+
+    /**
+     * Tells whether two consecutive text pieces are apart on screen: on different lines (unless
+     * the second one starts right where the first ends, like a superscript), or on the same
+     * line with a gap wider than a fraction of a space, or overlapping (a piece positioned
+     * over the other is not part of the same word).
+     * @param {Object} a - First piece.
+     * @param {Object} b - Next piece.
+     * @returns {boolean} True when a space separates them.
+     */
+    function arePiecesApart(a, b) {
+        var left = a.last;
+        var right = b.first;
+        var tolerance = 0.2 * Math.min(a.size, b.size);
+        var gap = Math.max(right.left - left.right, left.left - right.right);
+        var sameLine = right.top < left.bottom && right.bottom > left.top;
+        if (sameLine) return Math.abs(gap) > tolerance;
+        return !(right.left >= left.right - 1 && right.left - left.right <= tolerance);
+    }
+
+    /**
+     * Joins text pieces the way the page shows them: no space between pieces that touch
+     * (a price split into "11", ",", "95", "€"), one space between pieces apart on screen.
+     * @param {Array<Object>} pieces - Pieces (see getTextPieces).
+     * @returns {string} Text.
+     */
+    function joinTextPieces(pieces) {
+        var text = "";
+        var previous = null;
+        pieces.forEach(function(piece) {
+            if (previous && !/\s$/.test(text) && !/^\s/.test(piece.text) && arePiecesApart(previous, piece)) text += " ";
+            text += piece.text;
+            previous = piece;
+        });
+        return text;
+    }
+
+    /**
+     * Reads the text of an element as shown on screen. Inline pieces that touch are joined
+     * without the line breaks innerText adds around floated, positioned or flex pieces (a
+     * price split into "11", ",", "95", "€"). Large or unrendered elements are read with
+     * innerText.
+     * @param {HTMLElement} element - Element to read.
+     * @returns {string} Raw text (not cleaned).
+     */
+    function readRenderedText(element) {
+        var pieces = getTextPieces(element);
+        if (!pieces || !pieces.some(function(piece) { return piece.text !== " "; })) return element.innerText;
+        return joinTextPieces(pieces);
     }
 
     /**
@@ -662,29 +813,35 @@
     }
 
     /**
-     * Tells whether a class looks stable across pages: no digits, not a state, not generated.
+     * Tells whether a class looks stable across pages: no digits (or a word and a small
+     * number), not a state, not generated.
      * @param {string} className - Class name.
      * @returns {boolean} True for a stable class.
      */
     function isStableClass(className) {
-        return className.length > 1 && className.length <= 40 && !/\d/.test(className) &&
+        return className.length > 1 && className.length <= 40 && (!/\d/.test(className) || NUMBERED_CLASS_PATTERN.test(className)) &&
             /^[a-zA-Z_-][\w-]*$/.test(className) && !isOwnClass(className) &&
             !STATE_CLASS_PATTERN.test(className) && !GENERATED_CLASS_PATTERN.test(className);
     }
 
     /**
-     * Tells whether an id looks like a word: no digits and few changes between lower case,
-     * upper case and other characters (generated ids switch often).
+     * Tells whether an id looks like a word: no digits and few changes between lower case and
+     * upper case inside its parts (generated ids switch often). "-" and "_" only separate parts,
+     * so "corePrice_feature_div" is a word-like id.
      * @param {string} id - Element id.
      * @returns {boolean} True for a meaningful id.
      */
     function isWordLikeId(id) {
-        if (!id || id.length > 40 || /\d/.test(id)) return false;
+        if (!id || id.length > 40 || /\d/.test(id) || !/^[a-zA-Z_-]+$/.test(id)) return false;
         var changes = 0;
         var previous = null;
         for (var i = 0; i < id.length; i++) {
             var ch = id[i];
-            var type = ch >= "a" && ch <= "z" ? "lower" : (ch >= "A" && ch <= "Z" ? "upper" : "other");
+            if (ch === "-" || ch === "_") {
+                previous = null;
+                continue;
+            }
+            var type = ch >= "a" && ch <= "z" ? "lower" : "upper";
             if (previous && type !== previous) changes++;
             previous = type;
         }
@@ -742,11 +899,13 @@
             add("#" + escapeCssIdentifier(element.id), 2);
         }
 
-        // Rank 3: stable classes, alone then by pairs
+        // Rank 3: stable classes, alone then by pairs; aria-hidden, which marks the visible
+        // copy of a value whose full text is kept for screen readers (common, so weak alone)
         var classes = Array.prototype.filter.call(element.classList, isStableClass).slice(0, 4);
         classes.forEach(function(className) {
             add(tag + "." + escapeCssIdentifier(className), 3);
         });
+        if (element.getAttribute("aria-hidden") === "true") add(tag + buildAttributeSelector("aria-hidden", "true"), 3);
         for (var i = 0; i < classes.length; i++) {
             for (var j = i + 1; j < classes.length; j++) {
                 add(tag + "." + escapeCssIdentifier(classes[i]) + "." + escapeCssIdentifier(classes[j]), 3);
@@ -1029,20 +1188,87 @@
     }
 
     /**
-     * Places every box over its element, in page coordinates (boxes follow the page when it scrolls).
+     * Tells whether the body is a box of its own. The body's overflow applies to the window
+     * unless the root element sets its own: then pages use the body as their scroller.
+     * @returns {boolean} True when the body scrolls or clips on its own.
+     */
+    function isBodyOwnBox() {
+        return getComputedStyle(document.documentElement).overflowY !== "visible";
+    }
+
+    /**
+     * Returns the part of an element left visible by the boxes around it that clip their
+     * content (inner scroll boxes, overflow: hidden). The window is left out: boxes are drawn
+     * in page coordinates and follow it.
+     * @param {Element} element - Element.
+     * @param {DOMRect} rect - Its bounding box, in viewport coordinates.
+     * @returns {{left: number, top: number, width: number, height: number}|null} Visible part,
+     *     in viewport coordinates, or null when the element is clipped out.
+     */
+    function getVisiblePart(element, rect) {
+        var left = rect.left;
+        var top = rect.top;
+        var right = rect.right;
+        var bottom = rect.bottom;
+        var bodyOwnBox = isBodyOwnBox();
+        // An absolutely positioned element is only clipped by the boxes from its containing block up
+        var escaping = false;
+        var node = element;
+        while (node && node !== document.documentElement) {
+            var style = getComputedStyle(node);
+            var skip = false;
+            if (node !== element) {
+                var containsPositioned = style.position !== "static" || style.transform !== "none";
+                skip = escaping && !containsPositioned;
+                if (!skip) escaping = false;
+            }
+            if (!skip && node !== element && (node !== document.body || bodyOwnBox) &&
+                style.display !== "inline" && style.display !== "contents") {
+                var box = node.getBoundingClientRect();
+                if (style.overflowX !== "visible") {
+                    left = Math.max(left, box.left + node.clientLeft);
+                    right = Math.min(right, box.left + node.clientLeft + node.clientWidth);
+                }
+                if (style.overflowY !== "visible") {
+                    top = Math.max(top, box.top + node.clientTop);
+                    bottom = Math.min(bottom, box.top + node.clientTop + node.clientHeight);
+                }
+            }
+            if (!skip && style.position === "fixed") break;
+            if (!skip && style.position === "absolute") escaping = true;
+            node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+        }
+        var width = right - left;
+        var height = bottom - top;
+        if (width < 0 || height < 0 || (width === 0 && rect.width > 0) || (height === 0 && rect.height > 0)) return null;
+        return { left: left, top: top, width: width, height: height };
+    }
+
+    /**
+     * Places every box over the visible part of its element, in page coordinates (boxes follow
+     * the page when it scrolls). Parts scrolled out of an inner box are not drawn: drawn below
+     * the page, they would make the window scroll on pages where only that box scrolls.
      */
     function placeLayerBoxes() {
         if (!layer || !layerBoxes.length) return;
+        // Pages that rebuild their document can drop the layer: put it back
+        if (!layer.host.isConnected) document.documentElement.appendChild(layer.host);
         var origin = layer.host.getBoundingClientRect();
         layerBoxes.forEach(function(entry) {
+            // A field's element replaced by the page (late rendering) is found again
+            if (!entry.element.isConnected && entry.field) {
+                var again = resolveField(entry.field).element;
+                if (again) entry.element = again;
+            }
             var rect = entry.element.getBoundingClientRect();
             var hidden = !entry.element.isConnected || (rect.width === 0 && rect.height === 0);
-            entry.box.style.display = hidden ? "none" : "block";
-            if (hidden) return;
-            entry.box.style.left = (rect.left - origin.left) + "px";
-            entry.box.style.top = (rect.top - origin.top) + "px";
-            entry.box.style.width = rect.width + "px";
-            entry.box.style.height = rect.height + "px";
+            var part = hidden ? null : getVisiblePart(entry.element, rect);
+            entry.box.style.display = part ? "block" : "none";
+            if (!part) return;
+            entry.box.style.left = (part.left - origin.left) + "px";
+            entry.box.style.top = (part.top - origin.top) + "px";
+            entry.box.style.width = part.width + "px";
+            entry.box.style.height = part.height + "px";
         });
     }
 
@@ -1052,8 +1278,8 @@
      * @param {"hover"|"picked"|"found"} kind - Box style.
      * @returns {Object} Box entry.
      */
-    function addLayerBox(element, kind) {
-        var entry = { element: element, kind: kind, box: createLayerElement("div", "box " + kind, getLayer().boxes) };
+    function addLayerBox(element, kind, field) {
+        var entry = { element: element, kind: kind, field: field || null, box: createLayerElement("div", "box " + kind, getLayer().boxes) };
         layerBoxes.push(entry);
         placeLayerBoxes();
         return entry;
@@ -1096,9 +1322,9 @@
      * Highlights found elements; when none of them is in the window, scrolls to the first one.
      * @param {Element[]} elements - Elements to show.
      */
-    function showFoundElements(elements) {
+    function showFoundElements(elements, fields) {
         clearLayerBoxes("found");
-        elements.forEach(function(element) { addLayerBox(element, "found"); });
+        elements.forEach(function(element, index) { addLayerBox(element, "found", fields && fields[index]); });
         if (elements.length && !elements.some(isInViewport)) {
             elements[0].scrollIntoView({ block: "center", inline: "center" });
             placeLayerBoxes();
@@ -1393,6 +1619,90 @@
     }
 
     /**
+     * Finds the element that should scroll for a move under a point: the closest ancestor of
+     * the element there that can still scroll that way. The page's own scrolling element is
+     * left to the browser (null), which scrolls it natively and smoothly.
+     * @param {number} x - Viewport x.
+     * @param {number} y - Viewport y.
+     * @param {number} dx - Horizontal move (pixels, negative to the left).
+     * @param {number} dy - Vertical move (pixels, negative upwards).
+     * @returns {Element|null} Element to scroll, or null.
+     */
+    function findScrollTarget(x, y, dx, dy) {
+        var catcher = layer.catcher;
+        var element;
+        catcher.style.pointerEvents = "none";
+        try {
+            element = document.elementFromPoint(x, y);
+        } finally {
+            catcher.style.pointerEvents = "";
+        }
+        var documentScroller = document.scrollingElement || document.documentElement;
+        var bodyOwnBox = isBodyOwnBox();
+        while (element && element !== documentScroller && element !== document.documentElement) {
+            if ((element !== document.body || bodyOwnBox) && element !== layer.host) {
+                var style = getComputedStyle(element);
+                var canY = dy && /^(auto|scroll|overlay)$/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1 &&
+                    (dy > 0 ? element.scrollTop + element.clientHeight < element.scrollHeight - 1 : element.scrollTop > 0);
+                var canX = dx && /^(auto|scroll|overlay)$/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1 &&
+                    (dx > 0 ? element.scrollLeft + element.clientWidth < element.scrollWidth - 1 : element.scrollLeft > 0);
+                if (canY || canX) return element;
+            }
+            element = element.parentElement || (element.getRootNode && element.getRootNode().host) || null;
+        }
+        return null;
+    }
+
+    /**
+     * Mouse wheel over the picker's overlay: the overlay covers the page, so the browser would
+     * only scroll the document. Pages that scroll an inner box (web apps whose body does not
+     * scroll) get that box scrolled instead.
+     * @param {WheelEvent} event - Wheel event.
+     */
+    function onPickerWheel(event) {
+        if (!fieldPicker || !layer || event.ctrlKey || event.composedPath().indexOf(layer.catcher) === -1) return;
+        var scale = event.deltaMode === 1 ? WHEEL_LINE_PX : (event.deltaMode === 2 ? window.innerHeight : 1);
+        var dx = event.deltaX * scale;
+        var dy = event.deltaY * scale;
+        var target = findScrollTarget(event.clientX, event.clientY, dx, dy);
+        if (!target) return;
+        event.preventDefault();
+        target.scrollBy({ left: dx, top: dy, behavior: "instant" });
+    }
+
+    /**
+     * Scrolls the inner box under the pointer with the page keys (Page Up / Page Down, Space,
+     * Home, End). The document itself is left to the browser.
+     * @param {KeyboardEvent} event - Key event.
+     * @returns {boolean} True when the key scrolled a box.
+     */
+    function scrollWithKey(event) {
+        var pointer = fieldPicker.pointer;
+        if (!pointer || event.ctrlKey || event.metaKey || event.altKey) return false;
+        var down = event.key === "PageDown" || event.key === "End" || (event.key === " " && !event.shiftKey);
+        var up = event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey);
+        if (!down && !up) return false;
+        var target = findScrollTarget(pointer.x, pointer.y, 0, down ? 1 : -1);
+        if (!target) return false;
+        if (event.key === "Home") target.scrollTo({ top: 0, behavior: "instant" });
+        else if (event.key === "End") target.scrollTo({ top: target.scrollHeight, behavior: "instant" });
+        else target.scrollBy({ top: (down ? 1 : -1) * target.clientHeight * 0.875, behavior: "instant" });
+        return true;
+    }
+
+    /**
+     * The page scrolled while picking: the element under the pointer changed, hover it.
+     */
+    function onPickerScroll() {
+        if (!fieldPicker || fieldPicker.scrollFrame) return;
+        fieldPicker.scrollFrame = requestAnimationFrame(function() {
+            if (!fieldPicker) return;
+            fieldPicker.scrollFrame = 0;
+            updatePickerHover(false);
+        });
+    }
+
+    /**
      * Keyboard: Up / Down move through the elements under the pointer, Enter selects,
      * Escape hides the hover (and ends picking when nothing is hovered).
      * @param {KeyboardEvent} event - Key down event.
@@ -1415,7 +1725,7 @@
         } else if (event.key === "Enter" && getHoveredInfo()) {
             pickHoveredElement();
         } else {
-            handled = false;
+            handled = scrollWithKey(event);
         }
         if (handled) {
             event.preventDefault();
@@ -1471,10 +1781,44 @@
     }
 
     /**
+     * Shows the fields a template already has as selected (green) when they are found in the
+     * page, and keeps them from being added again. Fields not found yet (pages that draw their
+     * content late, or after a scroll) are looked for again while the picker is on.
+     * @param {Array<{kind: string, selectors: string[]}>} [fields] - Fields of the template.
+     */
+    function markExistingFields(fields) {
+        fieldPicker.pendingFields = (Array.isArray(fields) ? fields : []).slice();
+        markPendingFields();
+        if (fieldPicker.pendingFields.length) {
+            fieldPicker.pendingTimer = setInterval(markPendingFields, EXISTING_FIELDS_CHECK_MS);
+        }
+    }
+
+    /**
+     * Marks the existing fields that are now found in the page (see markExistingFields).
+     */
+    function markPendingFields() {
+        if (!fieldPicker) return;
+        fieldPicker.pendingFields = fieldPicker.pendingFields.filter(function(field) {
+            var element = resolveField(field).element;
+            if (!element) return true;
+            var kinds = fieldPicker.pickedKinds.get(element) || [];
+            if (kinds.indexOf(field.kind) === -1) kinds.push(field.kind);
+            fieldPicker.pickedKinds.set(element, kinds);
+            if (!layerBoxes.some(function(entry) { return entry.kind === "picked" && entry.element === element; })) {
+                addLayerBox(element, "picked", field);
+            }
+            return false;
+        });
+        if (!fieldPicker.pendingFields.length) clearInterval(fieldPicker.pendingTimer);
+    }
+
+    /**
      * Turns on the field picker: light dim, crosshair overlay catching the mouse (the page gets
      * no click or hover), hover box with its info label, and the picker panel.
+     * @param {Array<Object>} [existing] - Fields of the template being edited (see markExistingFields).
      */
-    function startFieldPicker() {
+    function startFieldPicker(existing) {
         if (fieldPicker) return;
         clearLayerBoxes("found");
         clearLayerBoxes("picked");
@@ -1492,12 +1836,18 @@
             cancelled: false,
             hoverBox: null,
             moveFrame: 0,
+            scrollFrame: 0,
+            pendingFields: [],
+            pendingTimer: 0,
             pickedKinds: new Map(),
             port: null
         };
+        markExistingFields(existing);
         onLayerEvent(parts.catcher, "mousemove", onPickerPointerMove);
         onLayerEvent(parts.catcher, "click", onPickerClick);
         window.addEventListener("keydown", onPickerKeyDown, true);
+        window.addEventListener("wheel", onPickerWheel, { capture: true, passive: false });
+        document.addEventListener("scroll", onPickerScroll, true);
         window.focus();
     }
 
@@ -1508,6 +1858,10 @@
         if (!fieldPicker) return;
         cancelAnimationFrame(fieldPicker.moveFrame);
         window.removeEventListener("keydown", onPickerKeyDown, true);
+        window.removeEventListener("wheel", onPickerWheel, { capture: true, passive: false });
+        document.removeEventListener("scroll", onPickerScroll, true);
+        cancelAnimationFrame(fieldPicker.scrollFrame);
+        clearInterval(fieldPicker.pendingTimer);
         if (layer) {
             onLayerEvent(layer.catcher, "mousemove", onPickerPointerMove, true);
             onLayerEvent(layer.catcher, "click", onPickerClick, true);
@@ -1525,79 +1879,107 @@
 
     // --- Extraction ---
 
+    // Matches of one selector tried for a value when its first match is empty
+    var MAX_FIELD_MATCHES = 20;
+    // Interval between two checks of the fields while waiting for a page to show them
+    var FIELD_CHECK_MS = 150;
+    // While fields are missing, the wait ends early once the page has not changed for this long
+    // (a page still drawing keeps changing; a field that is simply not on the page never comes)
+    var FIELD_QUIET_MS = 1500;
+
     /**
-     * Finds the element of a field: the first selector that matches wins.
-     * @param {{selectors: string[]}} field - Field.
-     * @returns {Element|null} Element, or null.
+     * Finds the element and value of a field. The first match of each selector is tried in
+     * order, then their other matches: the first one that gives a non-empty value wins (a
+     * page can hold an empty or hidden copy first, or a primary selector can land on another
+     * element). With no value, the first element found is returned with "".
+     * @param {{kind: string, selectors: string[]}} field - Field.
+     * @returns {{element: (Element|null), value: string}} Element and value.
      */
-    function findFieldElement(field) {
+    function resolveField(field) {
         var selectors = field && Array.isArray(field.selectors) ? field.selectors : [];
-        for (var i = 0; i < selectors.length; i++) {
-            var element = null;
+        var kind = field && field.kind;
+        var lists = selectors.map(function(selector) {
             try {
-                element = document.querySelector(selectors[i]);
+                return document.querySelectorAll(selector);
             } catch (e) {
-                element = null;
+                return [];
             }
-            if (element) return element;
+        });
+        var firstElement = null;
+        for (var i = 0; i < lists.length; i++) {
+            if (!lists[i].length) continue;
+            var value = readFieldValue(lists[i][0], kind);
+            if (value) return { element: lists[i][0], value: value };
+            firstElement = firstElement || lists[i][0];
         }
-        return null;
+        for (i = 0; i < lists.length; i++) {
+            for (var j = 1; j < lists[i].length && j < MAX_FIELD_MATCHES; j++) {
+                var other = readFieldValue(lists[i][j], kind);
+                if (other) return { element: lists[i][j], value: other };
+            }
+        }
+        return { element: firstElement, value: "" };
     }
 
     /**
-     * Extracts one value per field from the current page: for each field, the first selector
-     * that finds an element wins; a field with no match gives "".
+     * Extracts one value per field from the current page (see resolveField); a field with
+     * no value gives "".
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields to extract.
      * @returns {string[]} Values, in field order.
      */
     function extractPageDetails(fields) {
-        return (fields || []).map(function(field) {
-            var element = findFieldElement(field);
-            return element ? readFieldValue(element, field.kind) : "";
-        });
+        return (fields || []).map(function(field) { return resolveField(field).value; });
     }
 
     /**
-     * Tells whether one of the fields' first selectors finds an element with a box on screen.
-     * @param {Array<{selectors: string[]}>} fields - Fields.
-     * @returns {boolean} True when one is shown.
-     */
-    function isAnyFieldShown(fields) {
-        return fields.some(function(field) {
-            var element = findFieldElement({ selectors: (field.selectors || []).slice(0, 1) });
-            if (!element) return false;
-            var rect = element.getBoundingClientRect();
-            return rect.width > 0 || rect.height > 0;
-        });
-    }
-
-    /**
-     * Waits until one of the fields is shown in the page (pages that draw their content late),
-     * watching the page's changes, or until the time runs out.
-     * @param {Array<{selectors: string[]}>} fields - Fields.
+     * Waits until every field has a value (pages that draw their content late), watching the
+     * page's changes, until the time runs out or, unless told otherwise, the page stops
+     * changing for FIELD_QUIET_MS. A page that already shows every field answers at once.
+     * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
      * @param {number} timeoutMs - Longest wait.
-     * @returns {Promise<boolean>} True when a field is shown.
+     * @param {boolean} [untilTimeout=false] - Ignore the quiet rule (one page, the preview).
+     * @returns {Promise<boolean>} True when every field has a value.
      */
-    function waitForAnyField(fields, timeoutMs) {
+    function waitForFields(fields, timeoutMs, untilTimeout) {
+        var allFound = function() {
+            return fields.every(function(field) { return !!resolveField(field).value; });
+        };
         return new Promise(function(resolve) {
-            if (isAnyFieldShown(fields)) return resolve(true);
+            if (!fields.length || allFound()) return resolve(true);
+            if (!(timeoutMs > 0)) return resolve(false);
             var done = false;
-            var finish = function(shown) {
+            var scheduled = 0;
+            var finish = function(found) {
                 if (done) return;
                 done = true;
                 observer.disconnect();
                 clearInterval(poll);
                 clearTimeout(timer);
-                resolve(shown);
+                clearTimeout(scheduled);
+                resolve(found);
             };
+            var lastChange = Date.now();
             var check = function() {
-                if (isAnyFieldShown(fields)) finish(true);
+                scheduled = 0;
+                if (done) return;
+                if (allFound()) finish(true);
+                else if (!untilTimeout && Date.now() - lastChange >= FIELD_QUIET_MS) finish(false);
             };
-            var observer = new MutationObserver(check);
+            // Checks at most once per interval, however many changes the page makes. What this
+            // extension draws does not count as a change of the page.
+            var observer = new MutationObserver(function(records) {
+                var own = layer && records.every(function(record) {
+                    return record.target === layer.host || Array.prototype.indexOf.call(record.addedNodes, layer.host) !== -1 ||
+                        Array.prototype.indexOf.call(record.removedNodes, layer.host) !== -1;
+                });
+                if (own) return;
+                lastChange = Date.now();
+                if (!scheduled) scheduled = setTimeout(check, FIELD_CHECK_MS);
+            });
             observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
             // Layout changes (an image that loads, a style that applies) are not mutations
-            var poll = setInterval(check, 100);
-            var timer = setTimeout(function() { finish(false); }, Math.max(0, timeoutMs || 0));
+            var poll = setInterval(check, FIELD_CHECK_MS * 2);
+            var timer = setTimeout(function() { finish(false); }, timeoutMs);
         });
     }
 
@@ -1608,12 +1990,16 @@
      */
     function highlightFields(fields) {
         var found = [];
+        var foundFields = [];
         var flags = fields.map(function(field) {
-            var element = findFieldElement(field);
-            if (element && found.indexOf(element) === -1) found.push(element);
+            var element = resolveField(field).element;
+            if (element && found.indexOf(element) === -1) {
+                found.push(element);
+                foundFields.push(field);
+            }
             return !!element;
         });
-        showFoundElements(found);
+        showFoundElements(found, foundFields);
         return flags;
     }
 
@@ -1648,13 +2034,13 @@
         switch (message.action) {
             case "detailsPing":
                 if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
-                sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus() });
+                sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus(), doc: DOCUMENT_TOKEN });
                 break;
             case "detailsPickerStart":
                 clearLayerBoxes("found");
                 setBusyOverlay(false);
-                startFieldPicker();
-                sendResponse({ ok: true, url: window.location.href });
+                startFieldPicker(message.existing);
+                sendResponse({ ok: true, url: window.location.href, doc: DOCUMENT_TOKEN });
                 break;
             case "detailsPickerPoll":
                 // Long poll: answered at once if something changed, else on the next pick or stop
@@ -1671,13 +2057,15 @@
             case "detailsPreview":
                 // Waits for the page to show a field, reads one row and highlights what was found
                 (function(fields) {
-                    waitForAnyField(fields, message.waitMs).then(function() {
+                    waitForFields(fields, message.waitMs, true).then(function() {
                         try {
+                            // The picker may have been turned on meanwhile: its boxes stay alone
                             sendResponse({
                                 ok: true,
                                 url: window.location.href,
+                                doc: DOCUMENT_TOKEN,
                                 values: extractPageDetails(fields),
-                                found: message.highlight === false ? [] : highlightFields(fields)
+                                found: message.highlight === false || fieldPicker ? [] : highlightFields(fields)
                             });
                         } catch (e) {
                             sendResponse({ error: String(e && e.message || e) });
@@ -1688,15 +2076,15 @@
             case "detailsShowField":
                 // Highlights one field's element for a moment
                 (function(field) {
-                    var element = findFieldElement(field);
+                    var element = resolveField(field).element;
                     if (element) {
-                        showFoundElements([element]);
+                        showFoundElements([element], [field]);
                         var entry = layerBoxes[layerBoxes.length - 1];
                         setTimeout(function() {
                             removeLayerBoxes(function(box) { return box === entry; });
                         }, Math.max(200, message.durationMs || 1000));
                     }
-                    sendResponse({ ok: true, found: !!element });
+                    sendResponse({ ok: true, found: !!element, doc: DOCUMENT_TOKEN });
                 })(message.field);
                 break;
             case "detailsClearHighlights":
@@ -1708,18 +2096,29 @@
                 sendResponse({ ok: true });
                 break;
             case "detailsExtract":
-                try {
-                    if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
-                    var status = getPageHttpStatus();
-                    if (status >= 400) {
-                        // Error page: its text is not the data of the page that was asked for
-                        sendResponse({ ok: false, status: status, url: window.location.href });
-                    } else {
-                        sendResponse({ ok: true, status: status, url: window.location.href, values: extractPageDetails(message.fields) });
+                // Fields missing yet are waited for up to waitMs (content drawn late by scripts)
+                (function(fields) {
+                    try {
+                        if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
+                        var status = getPageHttpStatus();
+                        if (status >= 400) {
+                            // Error page: its text is not the data of the page that was asked for
+                            sendResponse({ ok: false, status: status, url: window.location.href });
+                            return;
+                        }
+                        var started = Date.now();
+                        waitForFields(fields, message.waitMs).then(function(complete) {
+                            try {
+                                sendResponse({ ok: true, status: status, url: window.location.href, values: extractPageDetails(fields),
+                                    complete: complete, waitedMs: Date.now() - started });
+                            } catch (e) {
+                                sendResponse({ error: String(e && e.message || e) });
+                            }
+                        });
+                    } catch (e) {
+                        sendResponse({ error: String(e && e.message || e) });
                     }
-                } catch (e) {
-                    sendResponse({ error: String(e && e.message || e) });
-                }
+                })(Array.isArray(message.fields) ? message.fields : []);
                 break;
             default:
                 sendResponse({});
@@ -1833,6 +2232,14 @@
             clearAllHighlights();
             (async function scrollDownUntilNewRows(tableSelector, sendResponse) {
                 /**
+                 * Scrolls an element down at once. Pages that ask for smooth scrolling
+                 * (scroll-behavior: smooth) would otherwise only move it after an animation.
+                 * @param {Element} el - The element to scroll.
+                 * @param {number} amount - Amount to scroll in pixels.
+                 */
+                let scrollElementBy = (el, amount) => el.scrollBy({ top: amount, behavior: "instant" });
+
+                /**
                  * Attempts to scroll an element down by 50px and checks if it can scroll.
                  * @param {Element} el - The scrollable element.
                  * @returns {Promise<boolean>} True if the element has reached scroll threshold.
@@ -1841,7 +2248,7 @@
                     if (el.scrollTop + 5 >= 50) {
                         resolve(true);
                     } else {
-                        el.scrollTop = el.scrollTop + 50;
+                        scrollElementBy(el, 50);
                         setTimeout(() => {
                             resolve(el.scrollTop + 5 >= 50);
                         }, 10);
@@ -1855,7 +2262,7 @@
                  * @returns {Promise<void>}
                  */
                 let scrollByAmount = (el, amount) => new Promise((resolve) => {
-                    el.scrollTop = el.scrollTop + amount;
+                    scrollElementBy(el, amount);
                     setTimeout(() => { resolve(); }, 1000);
                 });
 
@@ -1872,14 +2279,24 @@
                     return void sendResponse({ error: "No element with a scrollbar found" });
                 }
 
+                // Lists that only keep the rows near the window (virtual lists) drop the rows
+                // scrolled past: each step stays within one window height so no row is skipped,
+                // and new rows are told by the last row changing, as the row count may not.
+                let isDocumentScroller = scrollableEl === document.scrollingElement || scrollableEl === document.documentElement;
+                let visibleHeight = isDocumentScroller ? window.innerHeight : scrollableEl.clientHeight;
+                let stepHeight = Math.min(1000, Math.max(200, visibleHeight - 100));
+                let lastRowText = () => $(tableSelector).children().last().text();
+
                 let newRowsAppeared = false;
                 let scrollPositionUnchanged = false;
                 let initialRowCount = $(tableSelector).children().length;
+                let initialLastRowText = lastRowText();
                 let lastScrollTop = scrollableEl.scrollTop;
 
                 while (!newRowsAppeared && !scrollPositionUnchanged) {
-                    await scrollByAmount(scrollableEl, 1000);
-                    newRowsAppeared = initialRowCount !== $(tableSelector).children().length;
+                    await scrollByAmount(scrollableEl, stepHeight);
+                    newRowsAppeared = initialRowCount !== $(tableSelector).children().length ||
+                        initialLastRowText !== lastRowText();
                     scrollPositionUnchanged = scrollableEl.scrollTop === lastScrollTop;
                     lastScrollTop = scrollableEl.scrollTop;
                 }

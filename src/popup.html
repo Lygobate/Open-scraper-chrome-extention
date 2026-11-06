@@ -149,6 +149,7 @@
             <div class="osd-row">
                 <label for="detailsTemplate" class="osd-label osd-label-fixed">Template</label>
                 <select id="detailsTemplate" class="osd-select osd-grow"></select>
+                <button type="button" class="osd-btn" id="detailsEditFields" title="Select more data in the page to add to this template" hidden>Edit fields</button>
                 <div class="osd-menu-wrap">
                     <button type="button" class="osd-btn osd-btn-icon" id="detailsTemplateMenuButton" aria-haspopup="menu" aria-expanded="false" aria-controls="detailsTemplateMenu" aria-label="Template actions" title="Template actions">&#8943;</button>
                     <div class="osd-menu" id="detailsTemplateMenu" role="menu" hidden>
@@ -192,8 +193,10 @@
                     <span class="osd-run-domain" id="detailsRunDomain"></span>
                 </div>
                 <span class="osd-grow"></span>
-                <button type="button" class="osd-btn" id="detailsShowTab">Show page</button>
+                <button type="button" class="osd-btn" id="detailsShowTab" title="Bring the scraped browser tab to the front">Go to tab</button>
             </div>
+            <div class="osd-message" id="detailsTabMessage" role="status" hidden></div>
+            <div class="osd-run-top">
             <div class="osd-counters">
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsExtracted">0</span><span class="osd-counter-label">extracted</span></div>
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsRemaining">0</span><span class="osd-counter-label">remaining</span></div>
@@ -211,6 +214,7 @@
             </details>
             <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
             <div class="osd-message" id="detailsRunMessage" role="status" hidden></div>
+            </div>
             <div class="osd-row osd-results-head">
                 <span class="osd-count" id="detailsResultCount"></span>
                 <span class="osd-grow"></span>
@@ -226,7 +230,7 @@
                 <button type="button" class="osd-btn" id="detailsColumnPromptCancel">Cancel</button>
             </form>
             <div class="osd-message" id="detailsExportMessage" role="status" hidden></div>
-            <div id="detailsHot" class="osd-hot"></div>
+            <div class="osd-hot-wrap" id="detailsHotWrap"><div id="detailsHot" class="osd-hot"></div></div>
         </section>
     </div>
 

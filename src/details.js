@@ -17,8 +17,18 @@
     // After opening a URL, the page is not asked anything before its load begins or this delay
     // has passed (a change of the #fragment only begins no load)
     const LOAD_START_WAIT_MS = 300;
-    // Longest wait for a field of the template to show in the test page before the preview
-    const PREVIEW_WAIT_MS = 2000;
+    // Once a page has loaded (and Min has passed), longest extra wait for the fields not shown
+    // yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
+    // every field are read at once.
+    const LATE_FIELDS_WAIT_MS = 5000;
+    // Space kept under the results grid (paddings of the panel and of the step), and the delay
+    // before the grid follows a change of the window size
+    const GRID_BOTTOM_SPACE = 36;
+    const GRID_FIT_DELAY_MS = 100;
+    // Height of the grid's column headers: completion line, then the column name
+    const GRID_HEADER_HEIGHT = 38;
+    // Delay after the target tab finished loading a page before step 2 previews it again
+    const PAGE_WATCH_DELAY_MS = 300;
     // How long "show in page" highlights a field
     const SHOW_FIELD_MS = 1000;
 
@@ -66,6 +76,13 @@
         picking: false,
         pickToken: 0,
         picks: [],
+        pickTemplateId: "",
+        previewValues: null,
+        renaming: false,
+        previewUrl: "",
+        filledCounts: null,
+        gridSize: null,
+        gridFitTimer: 0,
         results: [],
         nextIndex: 0,
         extracted: 0,
@@ -80,6 +97,10 @@
         gridData: [],
         gridKey: "",
         port: null,
+        portDoc: "",
+        previewDoc: "",
+        pageWatchTimer: 0,
+        previewLoading: false,
         promptAction: null,
         columnPromptAction: null,
         waitSaveTimer: 0
@@ -103,6 +124,8 @@
         el.hidden = !text;
         el.classList.toggle("osd-message-warning", level === "warning");
         el.classList.toggle("osd-message-error", level === "error");
+        // A message above the results grid moves it down
+        if (state.grid) scheduleGridFit();
     }
 
     // --- Tabs and steps ---
@@ -494,11 +517,16 @@
     }
 
     /**
-     * Opens a fresh port with the page so that it removes what this window drew there when the
-     * window closes. The previous port is closed after the new one is open.
+     * Opens a port with the page so that it removes what this window drew there when the
+     * window closes. A port already open with the same document is kept: closing it right
+     * after opening another one could reach the page first, and the page would then remove
+     * the highlights it just drew. The previous port is closed after the new one is open.
+     * @param {string} [doc] - Token of the page's document, when known.
      */
-    function connectSessionPort() {
+    function connectSessionPort(doc) {
+        if (doc && state.port && state.portDoc === doc) return;
         const previous = state.port;
+        state.portDoc = doc || "";
         try {
             const port = chromeInstance.tabs.connect(targetTabId, { name: DETAILS_PORT_NAME });
             port.onDisconnect.addListener(() => {
@@ -605,7 +633,7 @@
                     if (response && isCancelled() && pingMessage.busy) sendToTab({ action: "detailsBusy", on: false });
                     const sameDocument = response && normalizeUrl(response.url) === target;
                     if (response && response.ready && (alreadyThere || loaded || sameDocument)) {
-                        connectSessionPort();
+                        connectSessionPort(response.doc);
                         return true;
                     }
                     if (!response && reloadAt && Date.now() > reloadAt) {
@@ -624,16 +652,37 @@
     }
 
     /**
-     * Brings the target tab and its window to the front.
+     * Brings the target tab and its window to the front. A minimized window is restored
+     * first: focusing it alone leaves it in the Dock on macOS.
+     * @returns {Promise<{ok: boolean, error: string}>} Result, with the reason when it failed.
      */
     async function focusTargetTab() {
         const tab = await getTargetTab();
-        if (!tab) return;
+        if (!tab) return { ok: false, error: "closed" };
         try {
             await chromeInstance.tabs.update(targetTabId, { active: true });
-            await chromeInstance.windows.update(tab.windowId, { focused: true });
+            const win = await chromeInstance.windows.get(tab.windowId);
+            const change = { focused: true };
+            if (win.state === "minimized") change.state = "normal";
+            await chromeInstance.windows.update(tab.windowId, change);
+            return { ok: true, error: "" };
         } catch (error) {
             console.warn("Unable to focus the target tab:", error);
+            return { ok: false, error: String(error && error.message || error) };
+        }
+    }
+
+    /**
+     * "Go to tab" button: brings the scraped tab to the front, or says why it cannot.
+     */
+    async function goToTargetTab() {
+        const result = await focusTargetTab();
+        if (result.ok) {
+            showMessage("detailsTabMessage", "");
+        } else if (result.error === "closed") {
+            showMessage("detailsTabMessage", "The scraped tab was closed. Open the page again and click the extension icon there.", "error");
+        } else {
+            showMessage("detailsTabMessage", "Unable to bring the scraped tab to the front: " + result.error, "error");
         }
     }
 
@@ -932,6 +981,12 @@
         }
         renderTemplateSelect();
         updateFieldsStepUi();
+        const template = getSelectedTemplate();
+        if (state.step === 2 && template && !$id("detailsPreview").hidden) {
+            // Names may have changed (here, in the grid or in another window)
+            const values = state.previewValues && state.previewValues.length === template.fields.length ? state.previewValues : null;
+            if (values || !state.previewValues) renderPreviewRows(template, values);
+        }
         if (state.step === 3) renderRunHeader();
         rebuildGridIfNeeded();
     }
@@ -956,15 +1011,7 @@
      */
     async function createTemplateFromPicks(picks) {
         const domain = getTestDomain();
-        const seen = {};
-        const fields = picks.filter(pick => pick && KIND_LABELS[pick.kind] && Array.isArray(pick.selectors) && pick.selectors.length)
-            .map((pick, index) => {
-                const base = String(pick.name || "").trim() || KIND_LABELS[pick.kind];
-                let name = base;
-                for (let n = 2; seen[name]; n++) name = base + " (" + n + ")";
-                seen[name] = true;
-                return { id: "f" + (index + 1), name: name, kind: pick.kind, selectors: pick.selectors.slice(0, 3).map(String) };
-            });
+        const fields = picksToFields(picks, [], [state.urlColumnName || "URL"]).slice(0, MAX_TEMPLATE_FIELDS);
         if (!fields.length) {
             showMessage("detailsPickMessage", "Nothing was selected.", "warning");
             return;
@@ -984,6 +1031,63 @@
         if (!(await updateTemplates(templates => { templates.push(template); }))) return;
         showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
         selectTemplate(template.id);
+    }
+
+    /**
+     * Turns picks into template fields: kinds checked, at most 3 selectors, column names made
+     * unique (among themselves and the given names), ids not used yet.
+     * @param {Array<Object>} picks - Picked fields.
+     * @param {Object[]} [existing=[]] - Fields already in the template.
+     * @param {string[]} [usedNames=[]] - Column names already taken.
+     * @returns {Object[]} New fields.
+     */
+    function picksToFields(picks, existing, usedNames) {
+        const seen = {};
+        (usedNames || []).forEach(name => { seen[name] = true; });
+        const usedIds = new Set((existing || []).map(field => field.id));
+        const known = new Set((existing || []).map(field => field.kind + "\n" + field.selectors[0]));
+        let next = 1;
+        return picks.filter(pick => pick && KIND_LABELS[pick.kind] && Array.isArray(pick.selectors) && pick.selectors.length)
+            .filter(pick => {
+                const key = pick.kind + "\n" + pick.selectors[0];
+                if (known.has(key)) return false;
+                known.add(key);
+                return true;
+            })
+            .map(pick => {
+                const base = String(pick.name || "").trim() || KIND_LABELS[pick.kind];
+                let name = base;
+                for (let n = 2; seen[name]; n++) name = base + " (" + n + ")";
+                seen[name] = true;
+                while (usedIds.has("f" + next)) next++;
+                const id = "f" + next;
+                usedIds.add(id);
+                return { id: id, name: name, kind: pick.kind, selectors: pick.selectors.slice(0, 3).map(String) };
+            });
+    }
+
+    /**
+     * Adds picked fields to an existing template (same id and name); fields it already has
+     * are not added twice.
+     * @param {string} templateId - Template id.
+     * @param {Array<Object>} picks - Picked fields.
+     */
+    async function addFieldsToTemplate(templateId, picks) {
+        let added = 0;
+        let name = "";
+        const saved = await updateTemplate(templateId, template => {
+            const fields = picksToFields(picks, template.fields, getResultColumns(template))
+                .slice(0, Math.max(0, MAX_TEMPLATE_FIELDS - template.fields.length));
+            template.fields = template.fields.concat(fields);
+            added = fields.length;
+            name = template.name;
+        });
+        if (!saved) {
+            showMessage("detailsPickMessage", "The template was deleted meanwhile: nothing was added.", "warning");
+        } else {
+            showMessage("detailsPickMessage", added ? plural(added, "field") + " added to \"" + name + "\"." :
+                "No new field: what you selected is already in the template.", added ? "info" : "warning");
+        }
     }
 
     /**
@@ -1167,6 +1271,8 @@
         $id("detailsPickStart").hidden = state.picking;
         $id("detailsPickStart").disabled = busy || !getTestUrl();
         $id("detailsPickStart").classList.toggle("osd-btn-primary", !getSelectedTemplate());
+        $id("detailsEditFields").hidden = !getSelectedTemplate();
+        $id("detailsEditFields").disabled = busy || !getTestUrl();
         $id("detailsPickStop").hidden = !state.picking;
         $id("detailsBackTo1").disabled = busy;
         $id("detailsToStep3").disabled = busy || !getSelectedTemplate();
@@ -1218,10 +1324,12 @@
     }
 
     /**
-     * Loads the test page if needed, waits for a field to show, reads one row and highlights
-     * the elements found in the page.
+     * Loads the test page if needed, reads one row (at once, then again once late fields show)
+     * and highlights in the page the elements found.
+     * @param {{shownPage: boolean}} [options] - shownPage: read the page shown in the tab as it
+     *     is (the user opened another page of the site there) instead of the test page.
      */
-    async function refreshPreview() {
+    async function refreshPreview(options) {
         const token = ++state.previewToken;
         const template = getSelectedTemplate();
         const box = $id("detailsPreview");
@@ -1230,75 +1338,202 @@
             return;
         }
         box.hidden = false;
+        state.previewUrl = "";
         renderPreviewRows(template, null);
         $id("detailsPreviewStatus").textContent = "Loading the test page…";
         const isCancelled = () => token !== state.previewToken;
-        const ready = await ensureTestPage(isCancelled);
+        state.previewLoading = true;
+        let ready;
+        try {
+            ready = options && options.shownPage ? true : await ensureTestPage(isCancelled);
+        } finally {
+            if (!isCancelled()) state.previewLoading = false;
+        }
         if (isCancelled()) return;
         if (!ready) {
             $id("detailsPreviewStatus").textContent = "The test page does not answer";
             return;
         }
         $id("detailsPreviewStatus").textContent = "Reading…";
-        const response = await sendToTab({
-            action: "detailsPreview",
-            fields: template.fields.map(field => ({ kind: field.kind, selectors: field.selectors })),
-            waitMs: PREVIEW_WAIT_MS
-        });
-        if (isCancelled()) return;
-        if (!response || !Array.isArray(response.values)) {
-            $id("detailsPreviewStatus").textContent = "The test page does not answer";
-            return;
+        const fields = template.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
+        // Read at once, then, if fields are missing, again once they show (or the wait ends)
+        for (const waitMs of [0, LATE_FIELDS_WAIT_MS]) {
+            const response = await sendToTab({ action: "detailsPreview", fields: fields, waitMs: waitMs });
+            if (isCancelled()) return;
+            if (!response || !Array.isArray(response.values)) {
+                $id("detailsPreviewStatus").textContent = "The test page does not answer";
+                return;
+            }
+            connectSessionPort(response.doc);
+            state.previewDoc = response.doc || "";
+            state.previewUrl = response.url || "";
+            const found = response.values.filter(value => value).length;
+            const complete = found === template.fields.length;
+            $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found" +
+                (complete || waitMs ? "" : " · waiting for the others…");
+            renderPreviewRows(template, response.values);
+            if (complete) return;
         }
-        connectSessionPort();
-        const found = response.values.filter(value => value).length;
-        $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found";
-        renderPreviewRows(template, response.values);
     }
 
     /**
-     * Draws the preview table: kind, column name, value read in the test page.
+     * Previews again a page that the target tab loaded on its own while the fields step is
+     * shown (reload, link followed, address typed): one of the URLs to visit becomes the test
+     * page; another page of the template's site is read as it is.
+     */
+    async function onTargetPageLoaded() {
+        state.pageWatchTimer = 0;
+        const template = getSelectedTemplate();
+        if (state.step !== 2 || isBusy() || !template || state.previewLoading || !document.body.classList.contains(DETAILS_MODE_CLASS)) return;
+        const response = await sendToTabWithRetry({ action: "detailsPing" }, ANSWER_TIMEOUT_MS);
+        if (!response || !response.doc || response.doc === state.previewDoc || state.step !== 2 || isBusy() || state.previewLoading) return;
+        const index = state.validUrls.map(normalizeUrl).indexOf(normalizeUrl(response.url));
+        if (index >= 0) {
+            if (index !== state.testIndex) {
+                state.testIndex = index;
+                updateTestUrlUi();
+                const changed = chooseTemplateForDomain();
+                renderTemplateSelect();
+                if (changed) return;
+            }
+            refreshPreview();
+        } else if (getRegistrableDomain(response.url) === template.domain) {
+            refreshPreview({ shownPage: true });
+        }
+    }
+
+    /**
+     * Draws the preview table: the URL column, then one row per field with its kind, column
+     * name (renamable), value read in the test page and a remove button. Not redrawn while a
+     * name is being edited (it is drawn again when the edit ends).
      * @param {Object} template - Template.
      * @param {string[]|null} values - Values, or null while loading.
      */
     function renderPreviewRows(template, values) {
+        state.previewValues = values;
+        if (state.renaming) return;
         const body = $id("detailsPreviewBody");
         body.textContent = "";
-        template.fields.forEach((field, index) => {
+        const columns = getResultColumns(template);
+        const addRow = (kindKey, kindLabel, key, name, value, missing, field) => {
             const row = document.createElement("tr");
             const kindCell = document.createElement("td");
             kindCell.className = "osd-preview-kind";
             const kind = document.createElement("span");
-            kind.className = "osd-kind osd-kind-" + field.kind;
-            kind.textContent = KIND_LABELS[field.kind];
+            kind.className = "osd-kind osd-kind-" + kindKey;
+            kind.textContent = kindLabel;
             kindCell.appendChild(kind);
 
             const nameCell = document.createElement("td");
             nameCell.className = "osd-preview-name";
-            nameCell.textContent = getFieldColumnName(template, field);
-            nameCell.title = field.selectors.join("\n");
+            const nameText = document.createElement("span");
+            nameText.className = "osd-preview-name-text";
+            nameText.textContent = name;
+            nameText.title = field ? name + "\n" + field.selectors.join("\n") : name;
+            const rename = document.createElement("button");
+            rename.type = "button";
+            rename.className = "osd-btn osd-btn-icon osd-rename";
+            rename.textContent = "✎";
+            rename.title = "Rename this column";
+            rename.setAttribute("aria-label", "Rename column " + name);
+            rename.disabled = isBusy();
+            rename.addEventListener("click", () => startRename(nameCell, template.id, key, name));
+            nameCell.append(nameText, rename);
 
             const valueCell = document.createElement("td");
-            const value = values ? values[index] || "" : "";
-            valueCell.className = "osd-preview-value" + (values && !value ? " is-missing" : "");
-            valueCell.textContent = values ? value || "Not found" : "…";
+            valueCell.className = "osd-preview-value" + (missing ? " is-missing" : "");
+            valueCell.textContent = values === null ? "…" : (missing ? "Not found" : value);
             valueCell.title = value;
 
             const removeCell = document.createElement("td");
             removeCell.className = "osd-preview-remove";
-            const remove = document.createElement("button");
-            remove.type = "button";
-            remove.className = "osd-btn osd-btn-icon";
-            remove.textContent = "×";
-            remove.title = "Remove this field from the template";
-            remove.setAttribute("aria-label", "Remove field " + getFieldColumnName(template, field));
-            remove.disabled = template.fields.length < 2 || isBusy();
-            remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
-            removeCell.appendChild(remove);
-
+            if (field) {
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "osd-btn osd-btn-icon";
+                remove.textContent = "×";
+                remove.title = "Remove this field from the template";
+                remove.setAttribute("aria-label", "Remove field " + name);
+                remove.disabled = template.fields.length < 2 || isBusy();
+                remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
+                removeCell.appendChild(remove);
+            }
             row.append(kindCell, nameCell, valueCell, removeCell);
             body.appendChild(row);
+        };
+        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null);
+        template.fields.forEach((field, index) => {
+            const value = values ? values[index] || "" : "";
+            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field);
         });
+    }
+
+    /**
+     * Saves a column name in the template (the one name used by the preview, the grid and the
+     * exports). Empty names are refused; a name used by another column gets " (2)"...
+     * @param {string} templateId - Template id.
+     * @param {string} key - Field id, or "url" for the URL column.
+     * @param {string} name - Wanted name.
+     * @returns {Promise<boolean>} True when saved.
+     */
+    async function renameColumn(templateId, key, name) {
+        const wanted = String(name || "").trim().slice(0, 120);
+        if (!wanted) return false;
+        return updateTemplate(templateId, template => {
+            const keys = ["url"].concat(template.fields.map(field => field.id));
+            const others = new Set(getResultColumns(template).filter((_, col) => keys[col] !== key));
+            let unique = wanted;
+            for (let n = 2; others.has(unique); n++) unique = wanted + " (" + n + ")";
+            template.renames[key] = unique;
+        });
+    }
+
+    /**
+     * Turns a column name of the preview into a text box: Enter or leaving it saves, Escape
+     * cancels, an empty name is refused.
+     * @param {HTMLElement} cell - Name cell.
+     * @param {string} templateId - Template id.
+     * @param {string} key - Field id, or "url".
+     * @param {string} current - Current name.
+     */
+    function startRename(cell, templateId, key, current) {
+        if (state.renaming || isBusy()) return;
+        state.renaming = true;
+        cell.textContent = "";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "osd-input osd-rename-input";
+        input.maxLength = 120;
+        input.value = current;
+        input.setAttribute("aria-label", "Column name");
+        cell.appendChild(input);
+        let done = false;
+        const finish = async save => {
+            if (done) return;
+            done = true;
+            const name = input.value.trim();
+            if (save && !name) showMessage("detailsPickMessage", "A column name cannot be empty: the name was kept.", "warning");
+            if (save && name && name !== current) {
+                await renameColumn(templateId, key, name);
+                showMessage("detailsPickMessage", "");
+            }
+            state.renaming = false;
+            const template = getSelectedTemplate();
+            if (template) renderPreviewRows(template, state.previewValues);
+        };
+        input.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                finish(true);
+            } else if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                finish(false);
+            }
+        });
+        input.addEventListener("blur", () => finish(true));
+        input.focus();
+        input.select();
     }
 
     /**
@@ -1325,9 +1560,13 @@
 
     /**
      * Opens the test page if needed, brings it to the front and turns on the picker there.
+     * @param {"new"|"edit"} [mode="new"] - "new" makes a new template of the picks; "edit"
+     *     shows the selected template's fields as selected and adds the picks to it.
      */
-    async function startPicking() {
+    async function startPicking(mode) {
         if (isBusy()) return;
+        const editing = mode === "edit" ? getSelectedTemplate() : null;
+        if (mode === "edit" && !editing) return;
         if (isListCrawlRunning()) {
             showMessage("detailsPickMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
             return;
@@ -1336,6 +1575,7 @@
         state.previewToken++;
         state.picking = true;
         state.picks = [];
+        state.pickTemplateId = editing ? editing.id : "";
         closeTemplateMenu();
         closePrompt("detailsTemplatePrompt");
         updateBusyUi();
@@ -1348,14 +1588,17 @@
             return;
         }
         await focusTargetTab();
-        const started = await sendToTabWithRetry({ action: "detailsPickerStart" }, ANSWER_TIMEOUT_MS);
+        const startMessage = { action: "detailsPickerStart" };
+        if (editing) startMessage.existing = editing.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
+        const started = await sendToTabWithRetry(startMessage, ANSWER_TIMEOUT_MS);
         if (token !== state.pickToken) return;
         if (!started || !started.ok) {
             endPicking(token, "The page does not answer. Reload it, or open a regular web page, then try again.", "error");
             return;
         }
-        connectSessionPort();
-        showMessage("detailsPickMessage", "Click the data to extract in the page, then click Finish.");
+        connectSessionPort(started.doc);
+        showMessage("detailsPickMessage", editing ? "Fields of \"" + editing.name + "\" found in the page are green. Click more data to add, then click Finish." :
+            "Click the data to extract in the page, then click Finish.");
         pollPicks(token);
     }
 
@@ -1407,10 +1650,19 @@
         state.pickToken++;
         state.picking = false;
         const picks = state.picks;
+        const editedId = state.pickTemplateId;
         state.picks = [];
+        state.pickTemplateId = "";
         showMessage("detailsPickMessage", message, level);
         updateBusyUi();
-        if (picks.length) {
+        if (editedId) {
+            if (picks.length) {
+                addFieldsToTemplate(editedId, picks).then(() => refreshPreview());
+            } else {
+                if (!message) showMessage("detailsPickMessage", "No field added.");
+                refreshPreview();
+            }
+        } else if (picks.length) {
             createTemplateFromPicks(picks);
         } else if (!message) {
             showMessage("detailsPickMessage", "Nothing was selected.", "warning");
@@ -1575,6 +1827,7 @@
         }
         if (state.nextIndex >= state.urls.length) resetResults();
 
+        sendToTab({ action: "detailsClearHighlights" });
         const runId = ++state.runId;
         const stopped = new Promise(resolve => { state.resolveStop = resolve; });
         const isStopped = () => runId !== state.runId;
@@ -1592,14 +1845,20 @@
             if (isUsableUrl(url)) {
                 // The page takes at least Min seconds and at most about Max seconds to load
                 const wait = getWait();
+                const pageStart = Date.now();
+                const limitMs = Math.max(1, wait.max) * 1000;
                 const [ready] = await Promise.race([
-                    Promise.all([loadPage(url, Math.max(1, wait.max) * 1000, { isCancelled: isStopped, busy: true }), sleep(wait.min * 1000)]),
+                    Promise.all([loadPage(url, limitMs, { isCancelled: isStopped, busy: true }), sleep(wait.min * 1000)]),
                     stopped.then(() => [false])
                 ]);
                 if (isStopped()) return;
                 let response;
                 if (ready) {
-                    response = await sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true }, 2000, isStopped);
+                    const waitMs = Math.max(0, Math.min(LATE_FIELDS_WAIT_MS, limitMs - (Date.now() - pageStart)));
+                    response = await Promise.race([
+                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, waitMs: waitMs }, 2000, isStopped),
+                        stopped.then(() => undefined)
+                    ]);
                     if (isStopped()) return;
                 }
                 if (response && response.ok && Array.isArray(response.values)) {
@@ -1650,6 +1909,28 @@
     // --- Results grid ---
 
     /**
+     * Counts, per column of the selected template, the rows where it has a value.
+     * @returns {{rows: number, filled: Object<string, number>}} Rows so far, filled count by
+     *     field id ("url" for the URL column).
+     */
+    function getFilledCounts() {
+        const template = getSelectedTemplate();
+        const key = template ? template.id + "|" + template.fields.map(field => field.id).join(",") + "|" + state.results.length : "";
+        if (state.filledCounts && state.filledCounts.key === key && state.filledCounts.results === state.results) return state.filledCounts;
+        const counts = { key: key, results: state.results, rows: state.results.length, filled: { url: 0 } };
+        state.filledCounts = counts;
+        if (!template) return counts;
+        template.fields.forEach(field => { counts.filled[field.id] = 0; });
+        state.results.forEach(result => {
+            if (String(result.url || "").trim()) counts.filled.url++;
+            template.fields.forEach(field => {
+                if (result.values[field.id]) counts.filled[field.id]++;
+            });
+        });
+        return counts;
+    }
+
+    /**
      * Returns the result column names: the URL column, then one column per field (renamed),
      * made unique.
      * @param {Object} template - Template.
@@ -1690,13 +1971,51 @@
     }
 
     /**
-     * Returns the height available for the grid in the window.
-     * @returns {number} Height in pixels.
+     * Returns the size available for the grid: the full width of its box and the height left
+     * down to the bottom of the window.
+     * @returns {{width: number, height: number}} Size in pixels.
      */
-    function getGridHeight() {
-        const container = $id("detailsHot");
-        const top = container.getBoundingClientRect().top;
-        return Math.max(160, window.innerHeight - top - 16);
+    function getGridSize() {
+        const wrap = $id("detailsHotWrap");
+        const top = wrap.getBoundingClientRect().top;
+        return { width: Math.max(200, wrap.clientWidth), height: Math.max(160, Math.floor(window.innerHeight - top - GRID_BOTTOM_SPACE)) };
+    }
+
+    /**
+     * Fits the grid to the space available, keeping its data, selection and scroll position.
+     */
+    function fitGrid() {
+        state.gridFitTimer = 0;
+        if (!state.grid || state.step !== 3 || !document.body.classList.contains(DETAILS_MODE_CLASS)) return;
+        const size = getGridSize();
+        if (state.gridSize && state.gridSize.width === size.width && state.gridSize.height === size.height) return;
+        const holder = $id("detailsHot").querySelector(".ht_master .wtHolder");
+        const left = holder ? holder.scrollLeft : 0;
+        const top = holder ? holder.scrollTop : 0;
+        state.gridSize = size;
+        state.grid.updateSettings({ width: size.width, height: size.height });
+        if (holder) setGridScroll(holder, left, top);
+    }
+
+    /**
+     * Scrolls the grid's cells and makes its row and column headers follow: the headers only
+     * move on a scroll event, which a position set to its current value does not fire.
+     * @param {HTMLElement} holder - Scrolling box of the grid's cells.
+     * @param {number} left - Horizontal position.
+     * @param {number} top - Vertical position.
+     */
+    function setGridScroll(holder, left, top) {
+        holder.scrollLeft = left;
+        holder.scrollTop = top;
+        holder.dispatchEvent(new Event("scroll"));
+    }
+
+    /**
+     * Fits the grid on the next frames, once (window resized, a message shown above it...).
+     */
+    function scheduleGridFit() {
+        if (state.gridFitTimer) return;
+        state.gridFitTimer = setTimeout(fitGrid, GRID_FIT_DELAY_MS);
     }
 
     /**
@@ -1719,31 +2038,42 @@
             return;
         }
         const columns = getResultColumns(template);
+        const size = getGridSize();
+        state.gridSize = size;
         state.gridData = state.results.map(result => toGridRow(template, result));
         state.grid = new Handsontable(container, {
             data: state.gridData,
             colHeaders: col => {
                 const name = escapeHtml(columns[col] || "");
+                const field = col > 0 ? template.fields[col - 1] : null;
+                // Completion line above the name: rows with a value / rows so far (not data)
+                const counts = getFilledCounts();
+                const filled = counts.filled[field ? field.id : "url"] || 0;
+                const stat = counts.rows ? filled + "/" + counts.rows : "&nbsp;";
+                const statTip = counts.rows ? ' title="' + filled + " of " + counts.rows + ' rows have a value"' : "";
                 const show = col > 0 ? '<button type="button" class="osd-col-action" data-col-action="show" data-col="' + col +
                     '" title="Show in page">&#9673;</button>' : "";
-                return '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
+                return '<span class="osd-col-stat' + (counts.rows && filled < counts.rows ? " is-partial" : "") + '"' + statTip + ">" + stat + "</span>" +
+                    '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
                     '<button type="button" class="osd-col-action" data-col-action="rename" data-col="' + col +
                     '" title="Rename column">&#9998;</button>' + show + "</span>";
             },
             columns: columns.map(() => ({ readOnly: true })),
             rowHeaders: true,
+            columnHeaderHeight: GRID_HEADER_HEIGHT,
             readOnly: true,
             wordWrap: false,
             manualColumnResize: true,
-            width: container.clientWidth,
-            height: getGridHeight(),
+            width: size.width,
+            height: size.height,
+            stretchH: "all",
             colWidths: columns.map((_, col) => (col === 0 ? 220 : 160))
         });
     }
 
     /**
-     * Adds one row to the grid without rebuilding it. The view follows the new row only when
-     * it was already showing the last rows.
+     * Adds one row to the grid without rebuilding it. The horizontal scroll never moves; the
+     * view follows the new row only when it was already showing the last rows.
      * @param {Object} result - New result.
      */
     function appendGridRow(result) {
@@ -1754,9 +2084,10 @@
         }
         const holder = $id("detailsHot").querySelector(".ht_master .wtHolder");
         const atBottom = !holder || holder.scrollTop + holder.clientHeight >= holder.scrollHeight - 30;
+        const left = holder ? holder.scrollLeft : 0;
         state.gridData.push(toGridRow(template, result));
         state.grid.render();
-        if (atBottom) state.grid.scrollViewportTo(state.gridData.length - 1, 0);
+        if (holder) setGridScroll(holder, left, atBottom ? holder.scrollHeight : holder.scrollTop);
     }
 
     /**
@@ -1776,8 +2107,7 @@
         if (button.dataset.colAction === "rename") {
             const current = getResultColumns(template)[col];
             openPrompt("detailsColumnPrompt", "Column name", current, "Save", name => {
-                if (!name) return;
-                updateTemplate(template.id, t => { t.renames[field ? field.id : "url"] = name.slice(0, 120); });
+                if (name) renameColumn(template.id, field ? field.id : "url", name);
             });
         } else if (field) {
             showFieldInPage(field);
@@ -1791,7 +2121,7 @@
     async function showFieldInPage(field) {
         await focusTargetTab();
         const response = await sendToTab({ action: "detailsShowField", field: { kind: field.kind, selectors: field.selectors }, durationMs: SHOW_FIELD_MS });
-        if (response) connectSessionPort();
+        if (response) connectSessionPort(response.doc);
         if (!response || !response.found) {
             showMessage("detailsExportMessage", "Not found in the page shown in the tab.", "warning");
         } else {
@@ -1896,12 +2226,13 @@
     $id("detailsTemplateFile").addEventListener("change", event => importTemplate(event.target.files[0]));
     $id("detailsTemplatePromptCancel").addEventListener("click", () => closePrompt("detailsTemplatePrompt"));
     $id("detailsColumnPromptCancel").addEventListener("click", () => closePrompt("detailsColumnPrompt"));
-    $id("detailsPickStart").addEventListener("click", startPicking);
+    $id("detailsPickStart").addEventListener("click", () => startPicking("new"));
+    $id("detailsEditFields").addEventListener("click", () => startPicking("edit"));
     $id("detailsPickStop").addEventListener("click", finishPicking);
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
     $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
-    $id("detailsShowTab").addEventListener("click", focusTargetTab);
+    $id("detailsShowTab").addEventListener("click", goToTargetTab);
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
     $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
@@ -1919,11 +2250,13 @@
         onTemplatesChanged();
     });
 
-    window.addEventListener("resize", () => {
-        if (state.grid && state.step === 3) {
-            state.grid.updateSettings({ width: $id("detailsHot").clientWidth, height: getGridHeight() });
-        }
+    window.addEventListener("resize", scheduleGridFit);
+    chromeInstance.tabs.onUpdated.addListener((tabId, changeInfo) => {
+        if (tabId !== targetTabId || changeInfo.status !== "complete" || state.step !== 2) return;
+        clearTimeout(state.pageWatchTimer);
+        state.pageWatchTimer = setTimeout(onTargetPageLoaded, PAGE_WATCH_DELAY_MS);
     });
+    $id("detailsOptions").addEventListener("toggle", scheduleGridFit);
 
     // The window holds the results in memory only: confirm before closing it during a run
     window.addEventListener("beforeunload", event => {

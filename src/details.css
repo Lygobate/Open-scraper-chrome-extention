@@ -301,7 +301,8 @@ body.mode-details .details-panel {
 .osd-btn-block {
     display: flex;
     width: 100%;
-    margin-top: 12px;
+    max-width: 360px;
+    margin: 12px auto 0;
 }
 
 .osd-btn-primary {
@@ -642,13 +643,42 @@ body.mode-details .details-panel {
     color: var(--text-primary);
 }
 
+.osd-preview-name-text {
+    display: inline-block;
+    max-width: calc(100% - 28px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+.osd-preview-name .osd-rename {
+    width: 22px;
+    height: 22px;
+    margin-left: 4px;
+    font-size: 12px;
+    vertical-align: middle;
+    color: var(--text-muted);
+    background: transparent;
+    border-color: transparent;
+}
+.osd-preview-name .osd-rename:hover:not(:disabled) {
+    color: var(--accent-teal);
+    border-color: var(--border-glass-hover);
+}
+.osd-rename-input {
+    width: 100%;
+    height: 24px;
+}
+.osd-kind-url {
+    color: var(--text-secondary);
+    background: var(--bg-glass-hover);
+}
 .osd-preview-value {
     color: var(--text-secondary);
 }
 
 .osd-preview-value.is-missing {
     font-style: italic;
-    color: var(--text-muted);
+    color: var(--accent-amber);
 }
 
 .osd-preview-table td.osd-preview-remove {
@@ -766,6 +796,26 @@ body.mode-details .details-panel {
 .osd-results-head {
     margin-top: 14px;
 }
+.osd-hot thead th {
+    height: 38px;
+    vertical-align: middle;
+}
+.osd-hot .osd-col-stat {
+    display: block;
+    font-size: 10px;
+    line-height: 13px;
+    font-weight: 400;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.osd-hot .osd-col-stat.is-partial {
+    color: var(--accent-amber);
+}
+
+.osd-hot-wrap {
+    width: 100%;
+    min-width: 0;
+}
 
 .osd-hot {
     margin-top: 8px;
@@ -800,4 +850,15 @@ body.mode-details .details-panel {
 .osd-hot .osd-col-action:hover {
     opacity: 1;
     border-color: currentColor;
+}
+
+/* === WIDTHS: steps 1 and 2 and the run controls sit in a centred column; the results
+   grid of step 3 uses the whole window === */
+.osd-stepper,
+#detailsStep1,
+#detailsStep2,
+.osd-run-top {
+    max-width: 880px;
+    margin-left: auto;
+    margin-right: auto;
 }
