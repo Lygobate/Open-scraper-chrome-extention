@@ -2218,14 +2218,24 @@
                     return void sendResponse({ error: "No element with a scrollbar found" });
                 }
 
+                // Lists that only keep the rows near the window (virtual lists) drop the rows
+                // scrolled past: each step stays within one window height so no row is skipped,
+                // and new rows are told by the last row changing, as the row count may not.
+                let isDocumentScroller = scrollableEl === document.scrollingElement || scrollableEl === document.documentElement;
+                let visibleHeight = isDocumentScroller ? window.innerHeight : scrollableEl.clientHeight;
+                let stepHeight = Math.min(1000, Math.max(200, visibleHeight - 100));
+                let lastRowText = () => $(tableSelector).children().last().text();
+
                 let newRowsAppeared = false;
                 let scrollPositionUnchanged = false;
                 let initialRowCount = $(tableSelector).children().length;
+                let initialLastRowText = lastRowText();
                 let lastScrollTop = scrollableEl.scrollTop;
 
                 while (!newRowsAppeared && !scrollPositionUnchanged) {
-                    await scrollByAmount(scrollableEl, 1000);
-                    newRowsAppeared = initialRowCount !== $(tableSelector).children().length;
+                    await scrollByAmount(scrollableEl, stepHeight);
+                    newRowsAppeared = initialRowCount !== $(tableSelector).children().length ||
+                        initialLastRowText !== lastRowText();
                     scrollPositionUnchanged = scrollableEl.scrollTop === lastScrollTop;
                     lastScrollTop = scrollableEl.scrollTop;
                 }
