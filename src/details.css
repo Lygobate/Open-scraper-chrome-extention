@@ -834,17 +834,170 @@ body.mode-details .details-panel {
     margin-top: 10px;
     font-size: 12px;
     color: var(--text-secondary);
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-sm);
+    transition: border-color var(--transition-fast);
+}
+
+.osd-options:hover,
+.osd-options[open] {
+    border-color: var(--border-glass-active);
 }
 
 .osd-options summary {
-    width: max-content;
-    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 8px 10px;
+    list-style: none;
+    border-radius: var(--radius-sm);
     cursor: pointer;
+    user-select: none;
+    transition: background var(--transition-fast);
+}
+
+.osd-options summary::-webkit-details-marker {
+    display: none;
+}
+
+.osd-options summary:hover {
+    background: var(--bg-glass-hover);
 }
 
 .osd-options summary:focus-visible {
     outline: none;
     box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.3);
+}
+
+/* Chevron pointing right when closed, down when open */
+.osd-options-chevron {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    margin: 0 2px;
+    border-right: 1.5px solid var(--text-secondary);
+    border-bottom: 1.5px solid var(--text-secondary);
+    transform: rotate(-45deg);
+    transition: transform var(--transition-fast);
+}
+
+.osd-options[open] .osd-options-chevron {
+    transform: rotate(45deg);
+}
+
+.osd-options-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.osd-options-summary {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-muted);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.osd-options[open] .osd-options-summary {
+    display: none;
+}
+
+.osd-options-body {
+    padding: 0 10px 10px;
+    border-top: 1px solid var(--border-glass);
+}
+
+/* On/off switch: a checkbox drawn as a sliding knob */
+.osd-switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin: 0;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.osd-switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+}
+
+.osd-switch-track {
+    position: relative;
+    flex: 0 0 auto;
+    width: 30px;
+    height: 17px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-full);
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.osd-switch-track::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.osd-switch input:checked + .osd-switch-track {
+    background: var(--accent-teal);
+    border-color: var(--accent-teal);
+}
+
+.osd-switch input:checked + .osd-switch-track::after {
+    background: var(--text-inverse);
+    transform: translateX(13px);
+}
+
+.osd-switch input:focus-visible + .osd-switch-track {
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.3);
+}
+
+.osd-switch input:checked ~ .osd-switch-label {
+    color: var(--text-primary);
+}
+
+.osd-switch input:disabled ~ * {
+    opacity: 0.45;
+}
+
+.osd-switch:has(input:disabled) {
+    cursor: not-allowed;
+}
+
+/* Small "i" in a circle that shows its explanation on hover */
+.osd-info {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    font-size: 10px;
+    font-weight: 700;
+    font-style: italic;
+    color: var(--text-muted);
+    border: 1px solid var(--text-muted);
+    border-radius: 50%;
+    cursor: help;
+}
+
+.osd-info:hover,
+.osd-info:focus-visible {
+    outline: none;
+    color: var(--accent-teal);
+    border-color: var(--accent-teal);
 }
 
 .osd-results-head {

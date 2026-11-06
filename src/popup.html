@@ -195,14 +195,29 @@
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsDuration">00:00</span><span class="osd-counter-label">duration</span></div>
             </div>
             <details class="osd-options" id="detailsOptions">
-                <summary>Options</summary>
-                <div class="osd-row">
-                    <span class="osd-label">Page load wait</span>
-                    <label class="osd-inline-input">Min <input type="number" id="detailsMinWait" class="osd-input osd-number" min="0" step="1" value="2"></label>
-                    <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="1" value="30"></label>
-                    <span class="osd-hint osd-hint-inline">seconds</span>
+                <summary>
+                    <span class="osd-options-chevron" aria-hidden="true"></span>
+                    <span class="osd-options-title">Options</span>
+                    <span class="osd-options-summary" id="detailsOptionsSummary">Wait 2–30 s · Load full page: off</span>
+                </summary>
+                <div class="osd-options-body">
+                    <div class="osd-row">
+                        <span class="osd-label">Page load wait</span>
+                        <label class="osd-inline-input">Min <input type="number" id="detailsMinWait" class="osd-input osd-number" min="0" step="1" value="2"></label>
+                        <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="1" value="30"></label>
+                        <span class="osd-hint osd-hint-inline">seconds</span>
+                    </div>
+                    <p class="osd-hint">Each page is read as soon as it shows the fields, but not before Min seconds: raise Min for pages that show their content late. Max is the longest a page can take.</p>
+                    <div class="osd-row">
+                        <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">
+                            <input type="checkbox" role="switch" id="detailsFullPage" aria-describedby="detailsFullPageInfo">
+                            <span class="osd-switch-track" aria-hidden="true"></span>
+                            <span class="osd-switch-label">Load full page</span>
+                        </label>
+                        <span class="osd-info" id="detailsFullPageInfo" tabindex="0" role="note" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer." aria-label="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">i</span>
+                    </div>
+                    <p class="osd-hint">Saved in the template.</p>
                 </div>
-                <p class="osd-hint">Each page is read as soon as it shows the fields, but not before Min seconds: raise Min for pages that show their content late. Max is the longest a page can take. Saved in the template.</p>
             </details>
             <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
             <div class="osd-message" id="detailsRunMessage" role="status" hidden></div>
