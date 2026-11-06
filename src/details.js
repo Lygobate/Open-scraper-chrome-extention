@@ -17,8 +17,10 @@
     // After opening a URL, the page is not asked anything before its load begins or this delay
     // has passed (a change of the #fragment only begins no load)
     const LOAD_START_WAIT_MS = 300;
-    // Longest wait for a field of the template to show in the test page before the preview
-    const PREVIEW_WAIT_MS = 2000;
+    // Once a page has loaded (and Min has passed), longest extra wait for the fields not shown
+    // yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
+    // every field are read at once.
+    const LATE_FIELDS_WAIT_MS = 5000;
     // How long "show in page" highlights a field
     const SHOW_FIELD_MS = 1000;
 
@@ -1240,20 +1242,23 @@
             return;
         }
         $id("detailsPreviewStatus").textContent = "Reading…";
-        const response = await sendToTab({
-            action: "detailsPreview",
-            fields: template.fields.map(field => ({ kind: field.kind, selectors: field.selectors })),
-            waitMs: PREVIEW_WAIT_MS
-        });
-        if (isCancelled()) return;
-        if (!response || !Array.isArray(response.values)) {
-            $id("detailsPreviewStatus").textContent = "The test page does not answer";
-            return;
+        const fields = template.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
+        // Read at once, then, if fields are missing, again once they show (or the wait ends)
+        for (const waitMs of [0, LATE_FIELDS_WAIT_MS]) {
+            const response = await sendToTab({ action: "detailsPreview", fields: fields, waitMs: waitMs });
+            if (isCancelled()) return;
+            if (!response || !Array.isArray(response.values)) {
+                $id("detailsPreviewStatus").textContent = "The test page does not answer";
+                return;
+            }
+            connectSessionPort();
+            const found = response.values.filter(value => value).length;
+            const complete = found === template.fields.length;
+            $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found" +
+                (complete || waitMs ? "" : " · waiting for the others…");
+            renderPreviewRows(template, response.values);
+            if (complete) return;
         }
-        connectSessionPort();
-        const found = response.values.filter(value => value).length;
-        $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found";
-        renderPreviewRows(template, response.values);
     }
 
     /**
@@ -1592,14 +1597,20 @@
             if (isUsableUrl(url)) {
                 // The page takes at least Min seconds and at most about Max seconds to load
                 const wait = getWait();
+                const pageStart = Date.now();
+                const limitMs = Math.max(1, wait.max) * 1000;
                 const [ready] = await Promise.race([
-                    Promise.all([loadPage(url, Math.max(1, wait.max) * 1000, { isCancelled: isStopped, busy: true }), sleep(wait.min * 1000)]),
+                    Promise.all([loadPage(url, limitMs, { isCancelled: isStopped, busy: true }), sleep(wait.min * 1000)]),
                     stopped.then(() => [false])
                 ]);
                 if (isStopped()) return;
                 let response;
                 if (ready) {
-                    response = await sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true }, 2000, isStopped);
+                    const waitMs = Math.max(0, Math.min(LATE_FIELDS_WAIT_MS, limitMs - (Date.now() - pageStart)));
+                    response = await Promise.race([
+                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, waitMs: waitMs }, 2000, isStopped),
+                        stopped.then(() => undefined)
+                    ]);
                     if (isStopped()) return;
                 }
                 if (response && response.ok && Array.isArray(response.values)) {

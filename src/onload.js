@@ -1702,79 +1702,93 @@
 
     // --- Extraction ---
 
+    // Matches of one selector tried for a value when its first match is empty
+    var MAX_FIELD_MATCHES = 20;
+    // Interval between two checks of the fields while waiting for a page to show them
+    var FIELD_CHECK_MS = 150;
+
     /**
-     * Finds the element of a field: the first selector that matches wins.
-     * @param {{selectors: string[]}} field - Field.
-     * @returns {Element|null} Element, or null.
+     * Finds the element and value of a field. The first match of each selector is tried in
+     * order, then their other matches: the first one that gives a non-empty value wins (a
+     * page can hold an empty or hidden copy first, or a primary selector can land on another
+     * element). With no value, the first element found is returned with "".
+     * @param {{kind: string, selectors: string[]}} field - Field.
+     * @returns {{element: (Element|null), value: string}} Element and value.
      */
-    function findFieldElement(field) {
+    function resolveField(field) {
         var selectors = field && Array.isArray(field.selectors) ? field.selectors : [];
-        for (var i = 0; i < selectors.length; i++) {
-            var element = null;
+        var kind = field && field.kind;
+        var lists = selectors.map(function(selector) {
             try {
-                element = document.querySelector(selectors[i]);
+                return document.querySelectorAll(selector);
             } catch (e) {
-                element = null;
+                return [];
             }
-            if (element) return element;
+        });
+        var firstElement = null;
+        for (var i = 0; i < lists.length; i++) {
+            if (!lists[i].length) continue;
+            var value = readFieldValue(lists[i][0], kind);
+            if (value) return { element: lists[i][0], value: value };
+            firstElement = firstElement || lists[i][0];
         }
-        return null;
+        for (i = 0; i < lists.length; i++) {
+            for (var j = 1; j < lists[i].length && j < MAX_FIELD_MATCHES; j++) {
+                var other = readFieldValue(lists[i][j], kind);
+                if (other) return { element: lists[i][j], value: other };
+            }
+        }
+        return { element: firstElement, value: "" };
     }
 
     /**
-     * Extracts one value per field from the current page: for each field, the first selector
-     * that finds an element wins; a field with no match gives "".
+     * Extracts one value per field from the current page (see resolveField); a field with
+     * no value gives "".
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields to extract.
      * @returns {string[]} Values, in field order.
      */
     function extractPageDetails(fields) {
-        return (fields || []).map(function(field) {
-            var element = findFieldElement(field);
-            return element ? readFieldValue(element, field.kind) : "";
-        });
+        return (fields || []).map(function(field) { return resolveField(field).value; });
     }
 
     /**
-     * Tells whether one of the fields' first selectors finds an element with a box on screen.
-     * @param {Array<{selectors: string[]}>} fields - Fields.
-     * @returns {boolean} True when one is shown.
-     */
-    function isAnyFieldShown(fields) {
-        return fields.some(function(field) {
-            var element = findFieldElement({ selectors: (field.selectors || []).slice(0, 1) });
-            if (!element) return false;
-            var rect = element.getBoundingClientRect();
-            return rect.width > 0 || rect.height > 0;
-        });
-    }
-
-    /**
-     * Waits until one of the fields is shown in the page (pages that draw their content late),
-     * watching the page's changes, or until the time runs out.
-     * @param {Array<{selectors: string[]}>} fields - Fields.
+     * Waits until every field has a value (pages that draw their content late), watching the
+     * page's changes, or until the time runs out. A page that already shows every field
+     * answers at once.
+     * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
      * @param {number} timeoutMs - Longest wait.
-     * @returns {Promise<boolean>} True when a field is shown.
+     * @returns {Promise<boolean>} True when every field has a value.
      */
-    function waitForAnyField(fields, timeoutMs) {
+    function waitForFields(fields, timeoutMs) {
+        var allFound = function() {
+            return fields.every(function(field) { return !!resolveField(field).value; });
+        };
         return new Promise(function(resolve) {
-            if (isAnyFieldShown(fields)) return resolve(true);
+            if (!fields.length || allFound()) return resolve(true);
+            if (!(timeoutMs > 0)) return resolve(false);
             var done = false;
-            var finish = function(shown) {
+            var scheduled = 0;
+            var finish = function(found) {
                 if (done) return;
                 done = true;
                 observer.disconnect();
                 clearInterval(poll);
                 clearTimeout(timer);
-                resolve(shown);
+                clearTimeout(scheduled);
+                resolve(found);
             };
             var check = function() {
-                if (isAnyFieldShown(fields)) finish(true);
+                scheduled = 0;
+                if (!done && allFound()) finish(true);
             };
-            var observer = new MutationObserver(check);
+            // Checks at most once per interval, however many changes the page makes
+            var observer = new MutationObserver(function() {
+                if (!scheduled) scheduled = setTimeout(check, FIELD_CHECK_MS);
+            });
             observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
             // Layout changes (an image that loads, a style that applies) are not mutations
-            var poll = setInterval(check, 100);
-            var timer = setTimeout(function() { finish(false); }, Math.max(0, timeoutMs || 0));
+            var poll = setInterval(check, FIELD_CHECK_MS * 2);
+            var timer = setTimeout(function() { finish(false); }, timeoutMs);
         });
     }
 
@@ -1786,7 +1800,7 @@
     function highlightFields(fields) {
         var found = [];
         var flags = fields.map(function(field) {
-            var element = findFieldElement(field);
+            var element = resolveField(field).element;
             if (element && found.indexOf(element) === -1) found.push(element);
             return !!element;
         });
@@ -1848,7 +1862,7 @@
             case "detailsPreview":
                 // Waits for the page to show a field, reads one row and highlights what was found
                 (function(fields) {
-                    waitForAnyField(fields, message.waitMs).then(function() {
+                    waitForFields(fields, message.waitMs).then(function() {
                         try {
                             sendResponse({
                                 ok: true,
@@ -1865,7 +1879,7 @@
             case "detailsShowField":
                 // Highlights one field's element for a moment
                 (function(field) {
-                    var element = findFieldElement(field);
+                    var element = resolveField(field).element;
                     if (element) {
                         showFoundElements([element]);
                         var entry = layerBoxes[layerBoxes.length - 1];
@@ -1885,18 +1899,29 @@
                 sendResponse({ ok: true });
                 break;
             case "detailsExtract":
-                try {
-                    if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
-                    var status = getPageHttpStatus();
-                    if (status >= 400) {
-                        // Error page: its text is not the data of the page that was asked for
-                        sendResponse({ ok: false, status: status, url: window.location.href });
-                    } else {
-                        sendResponse({ ok: true, status: status, url: window.location.href, values: extractPageDetails(message.fields) });
+                // Fields missing yet are waited for up to waitMs (content drawn late by scripts)
+                (function(fields) {
+                    try {
+                        if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
+                        var status = getPageHttpStatus();
+                        if (status >= 400) {
+                            // Error page: its text is not the data of the page that was asked for
+                            sendResponse({ ok: false, status: status, url: window.location.href });
+                            return;
+                        }
+                        var started = Date.now();
+                        waitForFields(fields, message.waitMs).then(function(complete) {
+                            try {
+                                sendResponse({ ok: true, status: status, url: window.location.href, values: extractPageDetails(fields),
+                                    complete: complete, waitedMs: Date.now() - started });
+                            } catch (e) {
+                                sendResponse({ error: String(e && e.message || e) });
+                            }
+                        });
+                    } catch (e) {
+                        sendResponse({ error: String(e && e.message || e) });
                     }
-                } catch (e) {
-                    sendResponse({ error: String(e && e.message || e) });
-                }
+                })(Array.isArray(message.fields) ? message.fields : []);
                 break;
             default:
                 sendResponse({});
