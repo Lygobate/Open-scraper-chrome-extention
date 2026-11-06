@@ -437,7 +437,7 @@
         }, 100);
     }
 
-    // --- Page details extraction: field picker and per-page extraction ---
+    // --- Page details extraction: highlight layer, field picker and per-page extraction ---
 
     // Classes added to page elements by this extension; never used in generated selectors
     var OWN_CLASS_PREFIXES = ["tablescraper-", "openscraper-"];
@@ -455,15 +455,65 @@
     var MAX_ANCESTOR_DEPTH = 6;
     var MAX_SELECTOR_TRIES = 1000;
     var MEDIA_ELEMENTS = "img, video, audio";
-    var PICKER_BLOCKED_EVENTS = ["click", "dblclick", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend", "submit"];
-    var PICKER_HOVER_CLASS = "openscraper-hover";
-    var PICKER_PICKED_CLASS = "openscraper-picked";
-    var PICKER_ACTIVE_CLASS = "openscraper-picking";
+    // Media inside a hovered element that are compared with its box (large containers hold many)
+    var MAX_MEDIA_CANDIDATES = 24;
     // Port opened by the scraping window while picking: picking ends when the window goes away
     var PICKER_PORT_NAME = "openscraper-details-picker";
-    // Capture phase, and not passive so that touch events can be cancelled too
-    var PICKER_LISTENER_OPTIONS = { capture: true, passive: false };
+    // Attribute of the element that hosts everything this extension draws in the page
+    var LAYER_ATTRIBUTE = "data-openscraper-layer";
+    // Space between a highlighted element and its info label, and between the label and the window edges
+    var LABEL_GAP = 4;
+    // Longest value kept in the info label (the label cuts it visually with an ellipsis anyway)
+    var LABEL_VALUE_LENGTH = 200;
+    // Boxes are placed again at this interval while shown, for pages that move on their own
+    var BOX_REFRESH_MS = 500;
 
+    var LAYER_STYLE =
+        ":host{all:initial}" +
+        "*{box-sizing:border-box}" +
+        ".boxes{position:absolute;left:0;top:0;width:0;height:0;z-index:2}" +
+        ".box{position:absolute;pointer-events:none;border-radius:3px}" +
+        ".box.hover{border:2px dashed #06b6d4;background:rgba(6,182,212,.14)}" +
+        ".box.picked{border:2px solid #10b981;background:rgba(16,185,129,.24)}" +
+        ".box.found{border:2px solid #f59e0b;background:rgba(245,158,11,.2)}" +
+        ".dim{position:fixed;inset:0;z-index:1;background:rgba(15,23,42,.1);pointer-events:none}" +
+        ".catcher{position:fixed;inset:0;z-index:3;cursor:crosshair;background:transparent;pointer-events:auto}" +
+        ".label{position:fixed;left:0;top:0;z-index:4;display:grid;grid-template-columns:auto minmax(0,1fr);" +
+        "gap:3px 8px;align-items:baseline;max-width:260px;padding:6px 8px;pointer-events:none;" +
+        "font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;color:#f1f5f9;" +
+        "background:#0f172a;border:1px solid rgba(6,182,212,.45);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4)}" +
+        ".label[hidden],.panel[hidden],.dim[hidden],.catcher[hidden],.busy[hidden]{display:none}" +
+        ".tag{grid-column:1/-1;justify-self:start;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;" +
+        "padding:1px 6px;font-weight:700;color:#06b6d4;background:rgba(6,182,212,.15);border-radius:4px}" +
+        ".key{color:#94a3b8}" +
+        ".val{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}" +
+        ".panel{position:fixed;top:16px;right:16px;z-index:5;width:220px;pointer-events:auto;" +
+        "font:13px/1.45 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#f1f5f9;background:#0f172a;" +
+        "border:1px solid rgba(6,182,212,.45);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.5);overflow:hidden}" +
+        ".head{display:flex;align-items:center;gap:8px;padding:8px 12px;font-weight:600;color:#06b6d4;" +
+        "background:#1e293b;cursor:move;user-select:none;touch-action:none}" +
+        ".grip{margin-left:auto;color:#64748b;letter-spacing:1px}" +
+        ".hints{margin:0;padding:10px 12px 4px;list-style:none;color:#94a3b8;font-size:12px}" +
+        ".hints li{margin:0 0 4px}" +
+        "kbd{display:inline-block;min-width:18px;padding:0 4px;margin-right:4px;font:600 11px/16px system-ui,sans-serif;" +
+        "text-align:center;color:#f1f5f9;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:4px}" +
+        ".finish{display:block;width:calc(100% - 24px);margin:8px 12px 12px;padding:8px 10px;font:600 13px/1.2 system-ui,sans-serif;" +
+        "color:#0f172a;background:#06b6d4;border:0;border-radius:8px;cursor:pointer}" +
+        ".finish:hover{background:#22d3ee}" +
+        ".busy{position:fixed;inset:0;z-index:6;display:flex;align-items:center;justify-content:center;" +
+        "background:rgba(15,23,42,.35);cursor:progress;pointer-events:auto}" +
+        ".busy-card{display:flex;align-items:center;gap:10px;padding:12px 18px;font:600 14px/1.3 system-ui,-apple-system,sans-serif;" +
+        "color:#f1f5f9;background:#0f172a;border:1px solid rgba(6,182,212,.45);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.5)}" +
+        ".spin{width:14px;height:14px;border:2px solid rgba(6,182,212,.3);border-top-color:#06b6d4;border-radius:50%;" +
+        "animation:spin .8s linear infinite}" +
+        "@keyframes spin{to{transform:rotate(360deg)}}";
+
+    // Everything drawn in the page lives in one shadow root, removed when nothing is shown
+    var layer = null;
+    // Highlight boxes shown, each {element, box, kind}
+    var layerBoxes = [];
+    var layerFrame = 0;
+    var layerTimer = 0;
     // Active picker state (null when the picker is off), fields picked so far and pending poll callbacks
     var fieldPicker = null;
     var pickedFields = [];
@@ -497,47 +547,62 @@
     }
 
     /**
+     * Returns the link element that the element is, or is inside of.
+     * @param {Element} element - Element.
+     * @returns {Element|null} The a / area element with a usable href, or null.
+     */
+    function getLinkElement(element) {
+        var anchor = element.closest("a[href], area[href]");
+        if (!(anchor instanceof HTMLAnchorElement || anchor instanceof HTMLAreaElement)) return null;
+        var href = (anchor.href || "").trim();
+        return href && !/^javascript:/i.test(href) ? anchor : null;
+    }
+
+    /**
      * Returns the absolute address of the link the element is, or is inside of.
      * @param {Element} element - Element to read.
      * @returns {string} Absolute URL, or "" (no link, or a javascript: link).
      */
     function getElementLink(element) {
-        var anchor = element.closest("a[href], area[href]");
-        if (!(anchor instanceof HTMLAnchorElement || anchor instanceof HTMLAreaElement)) return "";
-        var href = (anchor.href || "").trim();
-        return /^javascript:/i.test(href) ? "" : href;
+        var anchor = getLinkElement(element);
+        return anchor ? anchor.href.trim() : "";
     }
 
     /**
-     * Tells whether two elements occupy the same box on screen (2 px tolerance).
-     * @param {Element} first - First element.
-     * @param {Element} second - Second element.
+     * Tells whether two boxes match (2 px tolerance).
+     * @param {DOMRect} a - First box.
+     * @param {DOMRect} b - Second box.
      * @returns {boolean} True if both boxes match.
      */
-    function haveSameBox(first, second) {
-        var a = first.getBoundingClientRect();
-        var b = second.getBoundingClientRect();
+    function areSameRects(a, b) {
         return Math.abs(a.left - b.left) <= 2 && Math.abs(a.top - b.top) <= 2 &&
             Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2;
     }
 
     /**
-     * Returns the absolute source of the image, video or audio element that the element is,
-     * or that fills exactly the element's box (or is its only media when it has no text).
+     * Returns the image, video or audio element that the element is, or that fills exactly
+     * the element's box.
+     * @param {Element} element - Element.
+     * @returns {Element|null} Media element, or null.
+     */
+    function getMediaElement(element) {
+        if (element.matches(MEDIA_ELEMENTS)) return element;
+        var candidates = element.querySelectorAll(MEDIA_ELEMENTS);
+        if (!candidates.length) return null;
+        var box = element.getBoundingClientRect();
+        for (var i = 0; i < candidates.length && i < MAX_MEDIA_CANDIDATES; i++) {
+            if (areSameRects(candidates[i].getBoundingClientRect(), box)) return candidates[i];
+        }
+        return null;
+    }
+
+    /**
+     * Returns the absolute source of the media element that the element is or that fills its box.
      * @param {Element} element - Element to read.
      * @returns {string} Absolute URL, or "" (no media, or an inline data: source).
      */
     function getElementImage(element) {
-        var media = null;
-        if (element.matches(MEDIA_ELEMENTS)) {
-            media = element;
-        } else {
-            var candidates = element.querySelectorAll(MEDIA_ELEMENTS);
-            for (var i = 0; i < candidates.length && !media; i++) {
-                if (haveSameBox(candidates[i], element)) media = candidates[i];
-            }
-            if (!media && candidates.length === 1 && !getElementText(element)) media = candidates[0];
-        }
+        var media = getMediaElement(element);
         if (!media) return "";
         var src = media.currentSrc || media.src || "";
         if (!src) {
@@ -645,7 +710,7 @@
             }
         });
 
-        // Rank 1: descriptive attributes and other data attributes without digits
+        // Rank 1: descriptive attributes, tab order and other data attributes without digits
         DESCRIPTIVE_ATTRIBUTES.forEach(function(name) {
             var value = element.getAttribute(name);
             if (!value || value.length > 60) return;
@@ -655,6 +720,8 @@
                 add(tag + buildAttributeSelector(name, value.split(/\d/)[0], true), 1);
             }
         });
+        var tabIndex = (element.getAttribute("tabindex") || "").trim();
+        if (/^-?\d+$/.test(tabIndex)) add(tag + buildAttributeSelector("tabindex", tabIndex), 1);
         Array.prototype.forEach.call(element.attributes, function(attribute) {
             var name = attribute.name;
             if (name.indexOf("data-") !== 0 || TEST_ATTRIBUTES.indexOf(name) !== -1) return;
@@ -830,11 +897,195 @@
      */
     function suggestFieldName(element) {
         for (var node = element; node && node.nodeType === 1 && node !== document.body; node = node.parentElement) {
-            var className = Array.prototype.find.call(node.classList, function(cls) { return !isOwnClass(cls); });
+            var className = getFirstClass(node);
             if (className) return className.replace(/\./g, "_");
         }
         return element.localName;
     }
+
+    // --- Highlight layer: one shadow root, never any change to the page's own elements ---
+
+    /**
+     * Creates an element of the layer.
+     * @param {string} tag - Tag name.
+     * @param {string} className - Class names.
+     * @param {Element} [parent] - Parent to append to.
+     * @returns {Element} New element.
+     */
+    function createLayerElement(tag, className, parent) {
+        var element = document.createElement(tag);
+        element.className = className;
+        if (parent) parent.appendChild(element);
+        return element;
+    }
+
+    /**
+     * Returns the layer, creating it on first use: a host appended to the root element, with a
+     * shadow root so that the page's styles cannot reach what is drawn, above everything else.
+     * @returns {Object} Layer parts.
+     */
+    function getLayer() {
+        if (layer && layer.host.isConnected) return layer;
+        var host = document.createElement("div");
+        host.setAttribute(LAYER_ATTRIBUTE, "");
+        host.style.cssText = "all:initial !important;position:absolute !important;left:0 !important;top:0 !important;" +
+            "width:0 !important;height:0 !important;overflow:visible !important;display:block !important;" +
+            "z-index:2147483647 !important;pointer-events:none !important";
+        var root = host.attachShadow({ mode: "open" });
+        createLayerElement("style", "", root).textContent = LAYER_STYLE;
+        layer = {
+            host: host,
+            root: root,
+            dim: createLayerElement("div", "dim", root),
+            boxes: createLayerElement("div", "boxes", root),
+            catcher: createLayerElement("div", "catcher", root),
+            label: createLayerElement("div", "label", root),
+            panel: null,
+            busy: null
+        };
+        layer.dim.hidden = true;
+        layer.catcher.hidden = true;
+        layer.label.hidden = true;
+        // Clicks and presses on the layer never reach the page's own listeners
+        ["click", "dblclick", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend", "contextmenu"].forEach(function(type) {
+            root.addEventListener(type, function(event) { event.stopPropagation(); });
+        });
+        document.documentElement.appendChild(host);
+        document.addEventListener("scroll", scheduleLayerPlacement, true);
+        window.addEventListener("resize", scheduleLayerPlacement);
+        layerTimer = setInterval(scheduleLayerPlacement, BOX_REFRESH_MS);
+        return layer;
+    }
+
+    /**
+     * Removes the layer when nothing is shown in it any more.
+     */
+    function releaseLayerIfIdle() {
+        if (!layer || fieldPicker || layerBoxes.length || (layer.busy && !layer.busy.hidden)) return;
+        document.removeEventListener("scroll", scheduleLayerPlacement, true);
+        window.removeEventListener("resize", scheduleLayerPlacement);
+        clearInterval(layerTimer);
+        cancelAnimationFrame(layerFrame);
+        layerFrame = 0;
+        layer.host.remove();
+        layer = null;
+    }
+
+    /**
+     * Places the boxes and the label again on the next frame (after a scroll, a resize...).
+     */
+    function scheduleLayerPlacement() {
+        if (!layer || layerFrame) return;
+        layerFrame = requestAnimationFrame(function() {
+            layerFrame = 0;
+            placeLayerBoxes();
+            if (fieldPicker) {
+                // The page moved under a still pointer: what is under it may have changed
+                updatePickerHover(false);
+                placeInfoLabel();
+            }
+        });
+    }
+
+    /**
+     * Places every box over its element, in page coordinates (boxes follow the page when it scrolls).
+     */
+    function placeLayerBoxes() {
+        if (!layer || !layerBoxes.length) return;
+        var origin = layer.host.getBoundingClientRect();
+        layerBoxes.forEach(function(entry) {
+            var rect = entry.element.getBoundingClientRect();
+            var hidden = !entry.element.isConnected || (rect.width === 0 && rect.height === 0);
+            entry.box.style.display = hidden ? "none" : "block";
+            if (hidden) return;
+            entry.box.style.left = (rect.left - origin.left) + "px";
+            entry.box.style.top = (rect.top - origin.top) + "px";
+            entry.box.style.width = rect.width + "px";
+            entry.box.style.height = rect.height + "px";
+        });
+    }
+
+    /**
+     * Draws a box over an element.
+     * @param {Element} element - Element to highlight.
+     * @param {"hover"|"picked"|"found"} kind - Box style.
+     * @returns {Object} Box entry.
+     */
+    function addLayerBox(element, kind) {
+        var entry = { element: element, kind: kind, box: createLayerElement("div", "box " + kind, getLayer().boxes) };
+        layerBoxes.push(entry);
+        placeLayerBoxes();
+        return entry;
+    }
+
+    /**
+     * Removes boxes.
+     * @param {function(Object): boolean} test - Returns true for each box entry to remove.
+     */
+    function removeLayerBoxes(test) {
+        layerBoxes = layerBoxes.filter(function(entry) {
+            if (!test(entry)) return true;
+            entry.box.remove();
+            return false;
+        });
+        releaseLayerIfIdle();
+    }
+
+    /**
+     * Removes the boxes of one kind.
+     * @param {"hover"|"picked"|"found"} kind - Box style.
+     */
+    function clearLayerBoxes(kind) {
+        removeLayerBoxes(function(entry) { return entry.kind === kind; });
+    }
+
+    /**
+     * Tells whether part of an element is inside the window.
+     * @param {Element} element - Element.
+     * @returns {boolean} True if visible in the viewport.
+     */
+    function isInViewport(element) {
+        var rect = element.getBoundingClientRect();
+        var width = window.innerWidth || document.documentElement.clientWidth;
+        var height = window.innerHeight || document.documentElement.clientHeight;
+        return rect.bottom > 0 && rect.right > 0 && rect.top < height && rect.left < width;
+    }
+
+    /**
+     * Highlights found elements; when none of them is in the window, scrolls to the first one.
+     * @param {Element[]} elements - Elements to show.
+     */
+    function showFoundElements(elements) {
+        clearLayerBoxes("found");
+        elements.forEach(function(element) { addLayerBox(element, "found"); });
+        if (elements.length && !elements.some(isInViewport)) {
+            elements[0].scrollIntoView({ block: "center", inline: "center" });
+            placeLayerBoxes();
+        }
+    }
+
+    /**
+     * Shows or hides the "Extracting..." overlay that keeps the user from using the page during a run.
+     * @param {boolean} on - Show the overlay.
+     */
+    function setBusyOverlay(on) {
+        if (!on) {
+            if (layer && layer.busy) layer.busy.hidden = true;
+            releaseLayerIfIdle();
+            return;
+        }
+        var parts = getLayer();
+        if (!parts.busy) {
+            parts.busy = createLayerElement("div", "busy", parts.root);
+            parts.busy.setAttribute("role", "status");
+            var card = createLayerElement("div", "busy-card", parts.busy);
+            createLayerElement("span", "spin", card);
+            createLayerElement("span", "", card).textContent = "Extracting…";
+        }
+        parts.busy.hidden = false;
+    }
+
+    // --- Field picker ---
 
     /**
      * Returns what the popup needs to know about the picker.
@@ -854,97 +1105,243 @@
     }
 
     /**
-     * Tells whether an event comes from the picker's own floating panel.
-     * @param {Event} event - DOM event.
-     * @returns {boolean} True for panel events.
+     * Returns the first class of an element that was not added by this extension.
+     * @param {Element} element - Element.
+     * @returns {string} Class name, or "".
      */
-    function isPickerPanelEvent(event) {
-        return !!fieldPicker && event.composedPath().indexOf(fieldPicker.panelHost) !== -1;
+    function getFirstClass(element) {
+        return Array.prototype.find.call(element.classList, function(cls) { return !isOwnClass(cls); }) || "";
     }
 
     /**
-     * Moves the hover highlight to an element.
-     * @param {Element|null} element - Element to highlight.
+     * Describes what clicking an element would add: its text, the link it is or is inside of,
+     * and the media that it is or that fills its box.
+     * @param {Element} element - Element under the pointer.
+     * @returns {{element: Element, rect: DOMRect, text: string, linkElement: Element|null, link: string,
+     *     mediaElement: Element|null, image: string}} Description.
      */
-    function setPickerHover(element) {
-        if (fieldPicker.hovered) fieldPicker.hovered.classList.remove(PICKER_HOVER_CLASS);
-        fieldPicker.hovered = element;
-        if (element) element.classList.add(PICKER_HOVER_CLASS);
+    function describeElement(element) {
+        var linkElement = getLinkElement(element);
+        var mediaElement = getMediaElement(element);
+        return {
+            element: element,
+            rect: element.getBoundingClientRect(),
+            text: getElementText(element),
+            linkElement: linkElement,
+            link: linkElement ? getElementLink(linkElement) : "",
+            mediaElement: mediaElement,
+            image: mediaElement ? getElementImage(mediaElement) : ""
+        };
     }
 
     /**
-     * Adds the fields of an element: its text, its link and its image, when present.
-     * The same value kind of the same element is never added twice.
-     * @param {Element} element - Element chosen by the user.
+     * Lists the useful elements under a point, smallest first: elements with text, a link or a
+     * media. Elements stacked with exactly the same box count as one (the innermost is kept).
+     * @param {number} x - Viewport x.
+     * @param {number} y - Viewport y.
+     * @returns {Array<Object>} Descriptions (see describeElement).
      */
-    function pickElement(element) {
-        if (!element || element === document.body || element === document.documentElement) return;
-        var kinds = fieldPicker.pickedKinds.get(element) || [];
-        var name = suggestFieldName(element);
-        var selectors = null;
+    function getElementStack(x, y) {
+        var catcher = layer.catcher;
+        var elements;
+        catcher.style.pointerEvents = "none";
+        try {
+            elements = document.elementsFromPoint(x, y);
+        } finally {
+            catcher.style.pointerEvents = "";
+        }
+        var stack = [];
+        elements.forEach(function(element) {
+            if (element === layer.host || element === document.documentElement || element === document.body) return;
+            var info = describeElement(element);
+            if (!info.text && !info.link && !info.image) return;
+            if (info.rect.width === 0 && info.rect.height === 0) return;
+            var last = stack[stack.length - 1];
+            if (last && areSameRects(last.rect, info.rect)) return;
+            stack.push(info);
+        });
+        return stack;
+    }
+
+    /**
+     * Returns the description of the element currently hovered (at the chosen level), or null.
+     * @returns {Object|null} Description.
+     */
+    function getHoveredInfo() {
+        return fieldPicker && !fieldPicker.cancelled ? fieldPicker.stack[fieldPicker.level] || null : null;
+    }
+
+    /**
+     * Finds what is under the pointer and highlights it. The stack is only rebuilt when the
+     * element under the pointer changes, so moving inside one element costs nothing.
+     * @param {boolean} fromPointer - The pointer moved (a hover hidden with Escape comes back).
+     */
+    function updatePickerHover(fromPointer) {
+        var pointer = fieldPicker.pointer;
+        if (!pointer || (!fromPointer && fieldPicker.cancelled)) return;
+        var catcher = layer.catcher;
+        catcher.style.pointerEvents = "none";
+        var top;
+        try {
+            top = document.elementFromPoint(pointer.x, pointer.y);
+        } finally {
+            catcher.style.pointerEvents = "";
+        }
+        if (top === fieldPicker.top && !fieldPicker.cancelled) return;
+        var previous = getHoveredInfo();
+        var sameTop = top === fieldPicker.top;
+        fieldPicker.top = top;
+        fieldPicker.cancelled = false;
+        fieldPicker.stack = getElementStack(pointer.x, pointer.y);
+        // Keep the chosen level while the pointer stays on the same element
+        var index = previous && sameTop ? fieldPicker.stack.findIndex(function(info) { return info.element === previous.element; }) : -1;
+        fieldPicker.level = index >= 0 ? index : 0;
+        renderPickerHover();
+    }
+
+    /**
+     * Draws the hover box and the info label of the hovered element.
+     */
+    function renderPickerHover() {
+        var info = getHoveredInfo();
+        if (fieldPicker.hoverBox && (!info || fieldPicker.hoverBox.element !== info.element)) {
+            var oldBox = fieldPicker.hoverBox;
+            fieldPicker.hoverBox = null;
+            removeLayerBoxes(function(entry) { return entry === oldBox; });
+        }
+        if (info && !fieldPicker.hoverBox) fieldPicker.hoverBox = addLayerBox(info.element, "hover");
+        renderInfoLabel(info);
+    }
+
+    /**
+     * Fills the info label: the element's tag and first class, then one row per value a click
+     * would add (Text, Link, Image).
+     * @param {Object|null} info - Description of the hovered element.
+     */
+    function renderInfoLabel(info) {
+        var label = layer.label;
+        label.textContent = "";
+        if (!info) {
+            label.hidden = true;
+            return;
+        }
+        var cls = getFirstClass(info.element);
+        var tag = createLayerElement("span", "tag", label);
+        tag.textContent = info.element.localName + (cls ? "." + cls : "");
+        [["Text", info.text], ["Link", info.link], ["Image", info.image]].forEach(function(row) {
+            if (!row[1]) return;
+            createLayerElement("span", "key", label).textContent = row[0];
+            var value = createLayerElement("span", "val", label);
+            value.textContent = row[1].slice(0, LABEL_VALUE_LENGTH);
+        });
+        label.hidden = false;
+        placeInfoLabel();
+    }
+
+    /**
+     * Places the info label under the hovered box, or above it when there is no room below,
+     * always inside the window.
+     */
+    function placeInfoLabel() {
+        var info = getHoveredInfo();
+        var label = layer && layer.label;
+        if (!label || label.hidden || !info) return;
+        var rect = info.element.getBoundingClientRect();
+        var viewWidth = document.documentElement.clientWidth || window.innerWidth;
+        var viewHeight = document.documentElement.clientHeight || window.innerHeight;
+        var width = label.offsetWidth;
+        var height = label.offsetHeight;
+        var top = rect.bottom + LABEL_GAP;
+        if (top + height > viewHeight - LABEL_GAP) {
+            var above = rect.top - LABEL_GAP - height;
+            top = above >= LABEL_GAP ? above : viewHeight - LABEL_GAP - height;
+        }
+        top = Math.max(LABEL_GAP, Math.min(top, viewHeight - LABEL_GAP - height));
+        var left = Math.max(LABEL_GAP, Math.min(rect.left, viewWidth - LABEL_GAP - width));
+        label.style.transform = "translate(" + Math.round(left) + "px," + Math.round(top) + "px)";
+    }
+
+    /**
+     * Adds the fields of the hovered element: its text, its link and its image, when present.
+     * The link field targets the link element itself and the image field the media element
+     * itself. The same kind of value of the same element is never added twice.
+     */
+    function pickHoveredElement() {
+        var info = getHoveredInfo();
+        if (!info) return;
+        var name = suggestFieldName(info.element);
         var added = 0;
-        [["text", ""], ["link", " link"], ["image", " image"]].forEach(function(entry) {
+        [
+            ["text", info.element, info.text, ""],
+            ["link", info.linkElement, info.link, " link"],
+            ["image", info.mediaElement, info.image, " image"]
+        ].forEach(function(entry) {
             var kind = entry[0];
+            var target = entry[1];
+            if (!target || !entry[2]) return;
+            var kinds = fieldPicker.pickedKinds.get(target) || [];
             if (kinds.indexOf(kind) !== -1) return;
-            var value = readFieldValue(element, kind);
-            if (!value) return;
-            selectors = selectors || buildFieldSelectors(element);
-            pickedFields.push({ name: name + entry[1], kind: kind, selectors: selectors, sample: value.slice(0, 300) });
+            var selectors = buildFieldSelectors(target);
+            if (!selectors.length) return;
+            pickedFields.push({ name: name + entry[3], kind: kind, selectors: selectors, sample: entry[2].slice(0, 300) });
             kinds.push(kind);
+            fieldPicker.pickedKinds.set(target, kinds);
             added++;
         });
-        fieldPicker.pickedKinds.set(element, kinds);
-        if (added) element.classList.add(PICKER_PICKED_CLASS);
-        updatePickerPanel(added ? "" : "Nothing to extract from this element.");
+        if (added && !layerBoxes.some(function(entry) { return entry.kind === "picked" && entry.element === info.element; })) {
+            addLayerBox(info.element, "picked");
+        }
         answerPickerPolls();
     }
 
     /**
-     * Blocks the page's own reaction to clicks while picking, and picks on click.
-     * @param {Event} event - Mouse, pointer, touch or submit event.
+     * Pointer moves over the page: finds the element under it on the next frame.
+     * @param {MouseEvent} event - Mouse move event on the catcher.
      */
-    function onPickerBlockedEvent(event) {
-        if (isPickerPanelEvent(event)) return;
+    function onPickerPointerMove(event) {
+        fieldPicker.pointer = { x: event.clientX, y: event.clientY };
+        if (fieldPicker.moveFrame) return;
+        fieldPicker.moveFrame = requestAnimationFrame(function() {
+            if (!fieldPicker) return;
+            fieldPicker.moveFrame = 0;
+            updatePickerHover(true);
+        });
+    }
+
+    /**
+     * Click on the page: selects the hovered element.
+     * @param {MouseEvent} event - Click event on the catcher.
+     */
+    function onPickerClick(event) {
         event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        if (event.type === "click" && event.target instanceof Element) {
-            pickElement(fieldPicker.hovered && fieldPicker.hovered.contains(event.target) ? fieldPicker.hovered : event.target);
-        }
+        if (event.button !== 0) return;
+        fieldPicker.pointer = { x: event.clientX, y: event.clientY };
+        if (!getHoveredInfo()) updatePickerHover(true);
+        pickHoveredElement();
     }
 
     /**
-     * Highlights the element under the mouse.
-     * @param {MouseEvent} event - Mouse over event.
-     */
-    function onPickerMouseOver(event) {
-        if (isPickerPanelEvent(event)) {
-            setPickerHover(null);
-            return;
-        }
-        if (event.target instanceof Element && event.target !== fieldPicker.hovered) {
-            fieldPicker.ancestorTrail = [];
-            setPickerHover(event.target);
-        }
-    }
-
-    /**
-     * Keyboard: Up selects a larger element, Down goes back, Enter picks, Escape finishes.
+     * Keyboard: Up / Down move through the elements under the pointer, Enter selects,
+     * Escape hides the hover (and ends picking when nothing is hovered).
      * @param {KeyboardEvent} event - Key down event.
      */
     function onPickerKeyDown(event) {
-        var hovered = fieldPicker.hovered;
         var handled = true;
         if (event.key === "Escape") {
-            stopFieldPicker();
-        } else if (event.key === "ArrowUp" && hovered && hovered.parentElement &&
-            hovered.parentElement !== document.body && hovered.parentElement !== document.documentElement) {
-            fieldPicker.ancestorTrail.push(hovered);
-            setPickerHover(hovered.parentElement);
-        } else if (event.key === "ArrowDown" && fieldPicker.ancestorTrail.length) {
-            setPickerHover(fieldPicker.ancestorTrail.pop());
-        } else if (event.key === "Enter" && hovered) {
-            pickElement(hovered);
+            if (getHoveredInfo()) {
+                fieldPicker.cancelled = true;
+                renderPickerHover();
+            } else {
+                stopFieldPicker();
+            }
+        } else if (event.key === "ArrowUp" && getHoveredInfo()) {
+            fieldPicker.level = Math.min(fieldPicker.level + 1, fieldPicker.stack.length - 1);
+            renderPickerHover();
+        } else if (event.key === "ArrowDown" && getHoveredInfo()) {
+            fieldPicker.level = Math.max(fieldPicker.level - 1, 0);
+            renderPickerHover();
+        } else if (event.key === "Enter" && getHoveredInfo()) {
+            pickHoveredElement();
         } else {
             handled = false;
         }
@@ -956,102 +1353,123 @@
     }
 
     /**
-     * Creates the small floating panel shown in the page while picking (isolated in a shadow root).
-     * @returns {{host: Element, status: Element, count: Element}} Panel elements.
+     * Creates the small picker panel: product name (drag handle), shortcut hints, Finish button.
+     * @returns {Element} Panel.
      */
     function createPickerPanel() {
-        var host = document.createElement("div");
-        host.setAttribute("data-openscraper-picker", "");
-        host.style.cssText = "all: initial; position: fixed; z-index: 2147483647; right: 16px; bottom: 16px;";
-        var root = host.attachShadow({ mode: "open" });
-        root.innerHTML =
-            "<style>" +
-            ".panel{font:13px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;color:#f1f5f9;background:#0f172a;" +
-            "border:1px solid rgba(6,182,212,.45);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.45);padding:12px 14px;width:260px}" +
-            ".title{font-weight:600;color:#06b6d4;margin:0 0 6px}" +
-            ".help{color:#94a3b8;margin:0 0 8px}" +
-            ".count{margin:0 0 8px}" +
-            ".status{color:#f59e0b;margin:0 0 8px;min-height:0}" +
-            ".row{display:flex;gap:8px}" +
-            "button{font:inherit;border-radius:8px;padding:6px 10px;cursor:pointer;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#f1f5f9}" +
-            "button.finish{background:#06b6d4;border-color:#06b6d4;color:#0f172a;font-weight:600;flex:1}" +
-            "</style>" +
-            "<div class='panel' role='dialog' aria-label='Open Scraper field picker'>" +
-            "<p class='title'>Open Scraper: pick fields</p>" +
-            "<p class='help'>Click the data to extract. Up/Down arrows select a larger or smaller element, Enter adds it, Escape finishes.</p>" +
-            "<p class='count'></p><p class='status'></p>" +
-            "<div class='row'><button type='button' class='move'>Move</button><button type='button' class='finish'>Finish picking</button></div>" +
-            "</div>";
-        root.querySelector(".finish").addEventListener("click", function() { stopFieldPicker(); });
-        root.querySelector(".move").addEventListener("click", function() {
-            var onRight = host.style.right !== "auto";
-            host.style.right = onRight ? "auto" : "16px";
-            host.style.left = onRight ? "16px" : "auto";
+        var parts = getLayer();
+        var panel = createLayerElement("div", "panel", parts.root);
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-label", "Open Scraper picker");
+        var head = createLayerElement("div", "head", panel);
+        head.title = "Drag to move";
+        createLayerElement("span", "", head).textContent = "Open Scraper";
+        createLayerElement("span", "grip", head).textContent = "⋮⋮";
+        var hints = createLayerElement("ul", "hints", panel);
+        [["Click", "select"], ["↑ ↓", "change level"]].forEach(function(hint) {
+            var item = createLayerElement("li", "", hints);
+            hint[0].split(" ").forEach(function(key) { createLayerElement("kbd", "", item).textContent = key; });
+            item.appendChild(document.createTextNode(hint[1]));
         });
-        document.documentElement.appendChild(host);
-        return { host: host, status: root.querySelector(".status"), count: root.querySelector(".count") };
-    }
+        var finish = createLayerElement("button", "finish", panel);
+        finish.type = "button";
+        finish.textContent = "Finish";
+        finish.addEventListener("click", function() { stopFieldPicker(); });
 
-    /**
-     * Refreshes the counter and status line of the picker panel.
-     * @param {string} status - Status text ("" to clear).
-     */
-    function updatePickerPanel(status) {
-        if (!fieldPicker) return;
-        fieldPicker.panel.count.textContent = pickedFields.length + (pickedFields.length === 1 ? " field" : " fields") + " picked";
-        fieldPicker.panel.status.textContent = status || "";
-    }
-
-    /**
-     * Removes the marks left on picked elements.
-     */
-    function clearPickedMarks() {
-        document.querySelectorAll("." + PICKER_PICKED_CLASS).forEach(function(element) {
-            element.classList.remove(PICKER_PICKED_CLASS);
+        // Dragging by the header keeps the panel inside the window
+        var drag = null;
+        head.addEventListener("pointerdown", function(event) {
+            var rect = panel.getBoundingClientRect();
+            drag = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
+            head.setPointerCapture(event.pointerId);
+            event.preventDefault();
         });
+        head.addEventListener("pointermove", function(event) {
+            if (!drag) return;
+            var maxLeft = document.documentElement.clientWidth - panel.offsetWidth;
+            var maxTop = document.documentElement.clientHeight - panel.offsetHeight;
+            panel.style.right = "auto";
+            panel.style.left = Math.max(0, Math.min(maxLeft, event.clientX - drag.dx)) + "px";
+            panel.style.top = Math.max(0, Math.min(maxTop, event.clientY - drag.dy)) + "px";
+        });
+        var endDrag = function() { drag = null; };
+        head.addEventListener("pointerup", endDrag);
+        head.addEventListener("pointercancel", endDrag);
+        return panel;
     }
 
     /**
-     * Turns on the field picker: hover highlight, click to pick, page clicks blocked.
+     * Turns on the field picker: light dim, crosshair overlay catching the mouse (the page gets
+     * no click or hover), hover box with its info label, and the picker panel.
      */
     function startFieldPicker() {
         if (fieldPicker) return;
-        clearPickedMarks();
+        clearLayerBoxes("found");
+        clearLayerBoxes("picked");
         pickedFields = [];
-        var panel = createPickerPanel();
+        var parts = getLayer();
+        parts.dim.hidden = false;
+        parts.catcher.hidden = false;
+        if (!parts.panel) parts.panel = createPickerPanel();
+        parts.panel.hidden = false;
         fieldPicker = {
-            hovered: null,
-            ancestorTrail: [],
+            pointer: null,
+            top: null,
+            stack: [],
+            level: 0,
+            cancelled: false,
+            hoverBox: null,
+            moveFrame: 0,
             pickedKinds: new Map(),
-            panel: panel,
-            panelHost: panel.host,
             port: null
         };
-        document.documentElement.classList.add(PICKER_ACTIVE_CLASS);
-        PICKER_BLOCKED_EVENTS.forEach(function(type) {
-            window.addEventListener(type, onPickerBlockedEvent, PICKER_LISTENER_OPTIONS);
-        });
-        window.addEventListener("mouseover", onPickerMouseOver, true);
+        parts.catcher.addEventListener("mousemove", onPickerPointerMove);
+        parts.catcher.addEventListener("click", onPickerClick);
         window.addEventListener("keydown", onPickerKeyDown, true);
-        updatePickerPanel("");
         window.focus();
     }
 
     /**
-     * Turns off the field picker. Picked elements stay marked until the next start.
+     * Turns off the field picker and removes everything it drew.
      */
     function stopFieldPicker() {
         if (!fieldPicker) return;
-        PICKER_BLOCKED_EVENTS.forEach(function(type) {
-            window.removeEventListener(type, onPickerBlockedEvent, PICKER_LISTENER_OPTIONS);
-        });
-        window.removeEventListener("mouseover", onPickerMouseOver, true);
+        cancelAnimationFrame(fieldPicker.moveFrame);
         window.removeEventListener("keydown", onPickerKeyDown, true);
-        setPickerHover(null);
-        fieldPicker.panelHost.remove();
-        document.documentElement.classList.remove(PICKER_ACTIVE_CLASS);
+        if (layer) {
+            layer.catcher.removeEventListener("mousemove", onPickerPointerMove);
+            layer.catcher.removeEventListener("click", onPickerClick);
+            layer.catcher.hidden = true;
+            layer.dim.hidden = true;
+            layer.label.hidden = true;
+            if (layer.panel) layer.panel.hidden = true;
+        }
         fieldPicker = null;
+        clearLayerBoxes("hover");
+        clearLayerBoxes("picked");
+        releaseLayerIfIdle();
         answerPickerPolls();
+    }
+
+    // --- Extraction ---
+
+    /**
+     * Finds the element of a field: the first selector that matches wins.
+     * @param {{selectors: string[]}} field - Field.
+     * @returns {Element|null} Element, or null.
+     */
+    function findFieldElement(field) {
+        var selectors = field && Array.isArray(field.selectors) ? field.selectors : [];
+        for (var i = 0; i < selectors.length; i++) {
+            var element = null;
+            try {
+                element = document.querySelector(selectors[i]);
+            } catch (e) {
+                element = null;
+            }
+            if (element) return element;
+        }
+        return null;
     }
 
     /**
@@ -1062,18 +1480,69 @@
      */
     function extractPageDetails(fields) {
         return (fields || []).map(function(field) {
-            var selectors = Array.isArray(field.selectors) ? field.selectors : [];
-            for (var i = 0; i < selectors.length; i++) {
-                var element = null;
-                try {
-                    element = document.querySelector(selectors[i]);
-                } catch (e) {
-                    element = null;
-                }
-                if (element) return readFieldValue(element, field.kind);
-            }
-            return "";
+            var element = findFieldElement(field);
+            return element ? readFieldValue(element, field.kind) : "";
         });
+    }
+
+    /**
+     * Tells whether one of the fields' first selectors finds an element with a box on screen.
+     * @param {Array<{selectors: string[]}>} fields - Fields.
+     * @returns {boolean} True when one is shown.
+     */
+    function isAnyFieldShown(fields) {
+        return fields.some(function(field) {
+            var element = findFieldElement({ selectors: (field.selectors || []).slice(0, 1) });
+            if (!element) return false;
+            var rect = element.getBoundingClientRect();
+            return rect.width > 0 || rect.height > 0;
+        });
+    }
+
+    /**
+     * Waits until one of the fields is shown in the page (pages that draw their content late),
+     * watching the page's changes, or until the time runs out.
+     * @param {Array<{selectors: string[]}>} fields - Fields.
+     * @param {number} timeoutMs - Longest wait.
+     * @returns {Promise<boolean>} True when a field is shown.
+     */
+    function waitForAnyField(fields, timeoutMs) {
+        return new Promise(function(resolve) {
+            if (isAnyFieldShown(fields)) return resolve(true);
+            var done = false;
+            var finish = function(shown) {
+                if (done) return;
+                done = true;
+                observer.disconnect();
+                clearInterval(poll);
+                clearTimeout(timer);
+                resolve(shown);
+            };
+            var check = function() {
+                if (isAnyFieldShown(fields)) finish(true);
+            };
+            var observer = new MutationObserver(check);
+            observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+            // Layout changes (an image that loads, a style that applies) are not mutations
+            var poll = setInterval(check, 100);
+            var timer = setTimeout(function() { finish(false); }, Math.max(0, timeoutMs || 0));
+        });
+    }
+
+    /**
+     * Highlights the elements found for the fields (and scrolls to them when none is in view).
+     * @param {Array<{selectors: string[]}>} fields - Fields.
+     * @returns {boolean[]} Whether each field was found.
+     */
+    function highlightFields(fields) {
+        var found = [];
+        var flags = fields.map(function(field) {
+            var element = findFieldElement(field);
+            if (element && found.indexOf(element) === -1) found.push(element);
+            return !!element;
+        });
+        showFoundElements(found);
+        return flags;
     }
 
     /**
@@ -1090,6 +1559,15 @@
     }
 
     /**
+     * Removes everything this extension shows in the page.
+     */
+    function clearDetailsLayer() {
+        stopFieldPicker();
+        clearLayerBoxes("found");
+        setBusyOverlay(false);
+    }
+
+    /**
      * Handles the page details messages sent by the scraping window.
      * @param {Object} message - Message with an action starting with "details".
      * @param {Function} sendResponse - Message callback.
@@ -1097,9 +1575,12 @@
     function handleDetailsMessage(message, sendResponse) {
         switch (message.action) {
             case "detailsPing":
-                sendResponse({ ready: true, url: window.location.href });
+                if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
+                sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus() });
                 break;
             case "detailsPickerStart":
+                clearLayerBoxes("found");
+                setBusyOverlay(false);
                 startFieldPicker();
                 sendResponse({ ok: true, url: window.location.href });
                 break;
@@ -1115,12 +1596,48 @@
                 stopFieldPicker();
                 sendResponse(getPickerSnapshot());
                 break;
-            case "detailsClearMarks":
-                clearPickedMarks();
+            case "detailsPreview":
+                // Waits for the page to show a field, reads one row and highlights what was found
+                (function(fields) {
+                    waitForAnyField(fields, message.waitMs).then(function() {
+                        try {
+                            sendResponse({
+                                ok: true,
+                                url: window.location.href,
+                                values: extractPageDetails(fields),
+                                found: message.highlight === false ? [] : highlightFields(fields)
+                            });
+                        } catch (e) {
+                            sendResponse({ error: String(e && e.message || e) });
+                        }
+                    });
+                })(Array.isArray(message.fields) ? message.fields : []);
+                break;
+            case "detailsShowField":
+                // Highlights one field's element for a moment
+                (function(field) {
+                    var element = findFieldElement(field);
+                    if (element) {
+                        showFoundElements([element]);
+                        var entry = layerBoxes[layerBoxes.length - 1];
+                        setTimeout(function() {
+                            removeLayerBoxes(function(box) { return box === entry; });
+                        }, Math.max(200, message.durationMs || 1000));
+                    }
+                    sendResponse({ ok: true, found: !!element });
+                })(message.field);
+                break;
+            case "detailsClearHighlights":
+                clearLayerBoxes("found");
+                sendResponse({ ok: true });
+                break;
+            case "detailsBusy":
+                setBusyOverlay(!!message.on);
                 sendResponse({ ok: true });
                 break;
             case "detailsExtract":
                 try {
+                    if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
                     var status = getPageHttpStatus();
                     if (status >= 400) {
                         // Error page: its text is not the data of the page that was asked for
@@ -1137,13 +1654,15 @@
         }
     }
 
-    // The scraping window keeps a port open while picking; if it closes, picking ends
+    // The scraping window keeps a port open while it uses the page: when the window closes,
+    // the picker, highlights and overlay it left are removed
+    var detailsPorts = [];
     chrome.runtime.onConnect.addListener(function(port) {
-        if (port.name !== PICKER_PORT_NAME || !fieldPicker) return;
-        var session = fieldPicker;
-        session.port = port;
+        if (port.name !== PICKER_PORT_NAME) return;
+        detailsPorts.push(port);
         port.onDisconnect.addListener(function() {
-            if (fieldPicker === session) stopFieldPicker();
+            detailsPorts = detailsPorts.filter(function(other) { return other !== port; });
+            if (!detailsPorts.length) clearDetailsLayer();
         });
     });
 
