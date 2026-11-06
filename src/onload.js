@@ -405,7 +405,9 @@
     // Pointer events kept from the page while a button is being picked, so that picking clicks nothing
     var BUTTON_PICKER_EVENTS = ["click", "dblclick", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup"];
 
-    // Button picker in progress: {kind: "next" | "loadMore", sendResponse}, or null
+    // Button picker in progress: {kind: "next" | "loadMore" | "pages", sendResponse}, or null.
+    // A "pages" picker also keeps the elements from the hovered one up to the body (chain), the
+    // index of the one shown (level), its box in the layer and its number of page numbers.
     var buttonPicker = null;
 
     /**
@@ -438,12 +440,33 @@
     }
 
     /**
+     * Builds the selector of a picked element from its stable classes only: state classes
+     * (active, current, selected, is-...) come and go with the page shown, and a selector
+     * keeping them would miss the element on the next page.
+     *
+     * @param {Element} element - The picked element.
+     * @returns {string} A CSS selector string (e.g. "div#main>nav.pagination>ul").
+     */
+    function buildStableCssSelector(element) {
+        return $(element).parents().addBack().not("html").not("body").map(function() {
+            var tag = this.tagName.toLowerCase();
+            if (typeof this.id === "string" && this.id.trim() && !this.id.match(/\d+/g)) {
+                return tag + escapeCssSelectorPart(this.id, "#");
+            }
+            return tag + Array.prototype.filter.call(this.classList, isStableClass).map(function(cls) {
+                return escapeCssSelectorPart(cls);
+            }).join("");
+        }).get().join(">");
+    }
+
+    /**
      * Highlights the element the selector of the hovered button would find.
      *
      * @param {MouseEvent} event - The mouseover event.
      */
     function onButtonPickerHover(event) {
         if (!buttonPicker || !(event.target instanceof Element)) return;
+        if (buttonPicker.kind === "pages") return void hoverPageBar(event.target);
         $(".tablescraper-hover").removeClass("tablescraper-hover");
         $(buildCssSelectorForElement(getPickedButton(event.target))).last().addClass("tablescraper-hover");
     }
@@ -458,12 +481,18 @@
         event.preventDefault();
         event.stopImmediatePropagation();
         if (event.type !== "click" || !(event.target instanceof Element)) return;
-        var element = getPickedButton(event.target);
+        var pages = buttonPicker.kind === "pages";
+        if (pages) {
+            if (buttonPicker.target !== event.target) hoverPageBar(event.target);
+            // Not a pagination bar (fewer than 2 numbers, none following another): the label says so
+            if (!buttonPicker.isBar) return;
+        }
+        var element = pages ? buttonPicker.chain[buttonPicker.level] : getPickedButton(event.target);
         var sendResponse = buttonPicker.sendResponse;
         buttonPicker.sendResponse = null;
         stopButtonPicker();
         $(".tablescraper-next-button").removeClass("tablescraper-next-button");
-        var selector = buildCssSelectorForElement(element);
+        var selector = pages ? buildStableCssSelector(element) : buildCssSelectorForElement(element);
         $(element).addClass("tablescraper-next-button");
         console.log("Button selector:", selector);
         sendResponse({ selector: selector });
@@ -474,13 +503,15 @@
      * the user's next click to record the selector of the chosen button. A picker already
      * active is cancelled first. The page gets none of the picking clicks.
      *
-     * @param {string} kind - "next" for a "Next page" button, "loadMore" for a "Load more" button.
+     * @param {string} kind - "next" for a "Next page" button, "loadMore" for a "Load more" button,
+     *     "pages" for a bar of page numbers.
      * @param {Function} sendResponse - Chrome message callback to return the chosen selector.
      */
     function activateNextButtonPickingMode(kind, sendResponse) {
         stopButtonPicker();
         window.focus();
         buttonPicker = { kind: kind, sendResponse: sendResponse };
+        if (kind === "pages") window.addEventListener("keydown", onPageBarPickerKeyDown, true);
         window.addEventListener("mouseover", onButtonPickerHover, true);
         BUTTON_PICKER_EVENTS.forEach(function(type) {
             window.addEventListener(type, onButtonPickerEvent, true);
@@ -493,7 +524,13 @@
     function stopButtonPicker() {
         if (!buttonPicker) return;
         var sendResponse = buttonPicker.sendResponse;
+        var hoverBox = buttonPicker.hoverBox;
         buttonPicker = null;
+        window.removeEventListener("keydown", onPageBarPickerKeyDown, true);
+        if (hoverBox) {
+            if (layer) layer.label.hidden = true;
+            removeLayerBoxes(function(entry) { return entry === hoverBox; });
+        }
         window.removeEventListener("mouseover", onButtonPickerHover, true);
         BUTTON_PICKER_EVENTS.forEach(function(type) {
             window.removeEventListener(type, onButtonPickerEvent, true);
@@ -733,16 +770,23 @@
     }
 
     /**
-     * Marks the chosen "Next" or "Load more" button in the page, after removing any former mark.
+     * Marks the chosen "Next" or "Load more" button, or bar of page numbers, in the page, after
+     * removing any former mark.
      *
      * @param {string|null} selector - CSS selector of the button; none only removes the mark.
-     * @param {string} kind - "next" or "loadMore".
+     * @param {string} kind - "next", "loadMore" or "pages".
      * @param {Function} sendResponse - Chrome message callback, given {error} when not found.
      */
     function markButton(selector, kind, sendResponse) {
         $(".tablescraper-next-button").removeClass("tablescraper-next-button");
         if (!selector) {
             return sendResponse({});
+        }
+        if (kind === "pages") {
+            var bar = findPageBar(selector);
+            if (!bar) return sendResponse({ error: "Page numbers not found", errorId: "error" });
+            $(bar).addClass("tablescraper-next-button");
+            return sendResponse({ count: getPageNumbers(bar).length });
         }
         if (kind !== "loadMore") {
             return clickNextButton(selector, sendResponse, true);
@@ -753,6 +797,333 @@
         }
         $(button).addClass("tablescraper-next-button");
         sendResponse({});
+    }
+
+    // --- Page numbers: the bar of page numbers, read again at each page ---
+
+    // Text of a page number
+    var PAGE_NUMBER_PATTERN = /^\d{1,6}$/;
+    // Class that marks the current page: "active", "is-current", "page-item--active", "Mui-selected"...
+    var CURRENT_PAGE_CLASS_PATTERN = /(^|[-_])(active|current|selected)$/i;
+    // Interval between two looks for the bar while the page draws it again
+    var PAGE_BAR_POLL_MS = 250;
+    // Longest wait for a bar the page draws again late
+    var PAGE_BAR_WAIT_MS = 2000;
+    // A bigger box around the smallest one holding page numbers still counts as the bar when it
+    // holds more numbers and is at most this much taller (numbers split into groups)
+    var PAGE_BAR_GROW_PX = 40;
+
+    // First row of the page shown when a page number was clicked: detached once the page changes
+    var pageWatchRow = null;
+
+    /**
+     * Lists the page numbers of a bar: the shown elements whose own text is a whole number, one
+     * per number (the first shown one), in page order. Positions are not used: sites pin "1",
+     * move the window of numbers or centre the current one.
+     *
+     * @param {Element} bar - The pagination bar.
+     * @returns {Array<{number: number, element: Element}>} Page numbers, sorted.
+     */
+    function getPageNumbers(bar) {
+        var byNumber = new Map();
+        var walker = document.createTreeWalker(bar, NodeFilter.SHOW_TEXT);
+        for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+            var text = node.data.trim();
+            var element = node.parentElement;
+            if (!PAGE_NUMBER_PATTERN.test(text) || !element || element === bar) continue;
+            // The number must be the element's only own text ("Page 3" is no page number), while
+            // texts of its children are allowed (screen reader texts like "(current)")
+            var ownText = Array.prototype.filter.call(element.childNodes, function(child) {
+                return child.nodeType === Node.TEXT_NODE && child.data.trim();
+            });
+            if (ownText.length !== 1) continue;
+            var number = parseInt(text, 10);
+            if (number < 1 || byNumber.has(number) || !isElementShown(element)) continue;
+            byNumber.set(number, element);
+        }
+        return Array.from(byNumber, function(entry) { return { number: entry[0], element: entry[1] }; })
+            .sort(function(a, b) { return a.number - b.number; });
+    }
+
+    /**
+     * Tells whether page numbers look like a pagination bar: at least 2 numbers, two of them
+     * following each other (the current page and the next or previous one are always shown).
+     *
+     * @param {Array<{number: number}>} numbers - Page numbers, sorted.
+     * @returns {boolean} True for a pagination bar.
+     */
+    function isPageBarLike(numbers) {
+        return numbers.some(function(entry, index) { return index > 0 && entry.number === numbers[index - 1].number + 1; });
+    }
+
+    /**
+     * Returns the element a page number is clicked through: the number itself when it is a link
+     * or a button, else a link or button inside it, else the closest one around it inside the bar,
+     * else the highest element around it that shows a pointer cursor or has an onclick, still
+     * holding this number only. Without any, the number itself (a click on it reaches the
+     * handlers of the elements around it).
+     *
+     * @param {Element} element - Element of the page number.
+     * @param {Element} bar - The pagination bar.
+     * @returns {{element: Element, sure: boolean}} The element to click, and whether it looks clickable.
+     */
+    function getPageNumberTarget(element, bar) {
+        if (element.matches(CLICKABLE_SELECTOR)) return { element: element, sure: true };
+        var inside = element.querySelector(CLICKABLE_SELECTOR);
+        if (inside) return { element: inside, sure: true };
+        var around = element.parentElement && element.parentElement.closest(CLICKABLE_SELECTOR);
+        if (around && around !== bar && bar.contains(around)) return { element: around, sure: true };
+        var target = null;
+        for (var node = element; node && node !== bar && getPageNumbers(node).length <= 1; node = node.parentElement) {
+            if (node.hasAttribute("onclick") || getComputedStyle(node).cursor === "pointer") target = node;
+        }
+        return target ? { element: target, sure: true } : { element: element, sure: false };
+    }
+
+    /**
+     * Tells whether a page number is marked as the current page by one kind of mark, on its
+     * element or the elements around it that hold no other number.
+     *
+     * @param {Element} element - Element of the page number.
+     * @param {Element} bar - The pagination bar.
+     * @param {function(Element): boolean} test - The mark looked for on one element.
+     * @returns {boolean} True when marked.
+     */
+    function hasPageMark(element, bar, test) {
+        for (var node = element; node && node !== bar && getPageNumbers(node).length <= 1; node = node.parentElement) {
+            if (test(node)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Finds the page number the bar marks as the current page: by aria-current, else by a class
+     * (active, current, selected...), else by being disabled, else by being the only number that
+     * is not a link while the others are. A mark only counts when one number has it.
+     *
+     * @param {Element} bar - The pagination bar.
+     * @param {Array<{number: number, element: Element}>} numbers - Its page numbers.
+     * @returns {number|null} The current page, or null when no number is marked.
+     */
+    function getMarkedPage(bar, numbers) {
+        var marks = [
+            function(node) {
+                var value = node.getAttribute("aria-current");
+                return value !== null && value !== "false";
+            },
+            function(node) {
+                return Array.prototype.some.call(node.classList, function(cls) { return CURRENT_PAGE_CLASS_PATTERN.test(cls); });
+            },
+            isElementDisabled
+        ];
+        for (var i = 0; i < marks.length; i++) {
+            var marked = numbers.filter(function(entry) { return hasPageMark(entry.element, bar, marks[i]); });
+            if (marked.length === 1) return marked[0].number;
+        }
+        var notLinks = numbers.filter(function(entry) { return !getPageNumberTarget(entry.element, bar).sure; });
+        return notLinks.length === 1 && numbers.length > 2 ? notLinks[0].number : null;
+    }
+
+    /**
+     * Finds the pagination bar by its selector. Like findLoadMoreButton, the leading parts of the
+     * selector are dropped while nothing matches, as long as a class or an id is left. Among
+     * several matches (bars above and below the list), the last shown one with page numbers wins.
+     *
+     * @param {string} selector - CSS selector of the bar.
+     * @returns {Element|null} The bar, or null when the page has none.
+     */
+    function findPageBar(selector) {
+        for (var first = true; selector && (first || /[.#]/.test(selector)); selector = selector.split(">").slice(1).join(">")) {
+            first = false;
+            var matches = Array.prototype.filter.call(document.querySelectorAll(selector), function(element) {
+                return isElementShown(element) && getPageNumbers(element).length > 0;
+            });
+            if (matches.length) return matches[matches.length - 1];
+        }
+        return null;
+    }
+
+    /**
+     * Looks for the pagination bar until it is found or the time is up.
+     *
+     * @param {string} selector - CSS selector of the bar.
+     * @param {number} timeoutMs - Longest wait in milliseconds.
+     * @returns {Promise<Element|null>} The bar, or null.
+     */
+    async function waitForPageBar(selector, timeoutMs) {
+        var deadline = Date.now() + timeoutMs;
+        for (;;) {
+            var bar = findPageBar(selector);
+            if (bar || Date.now() >= deadline) return bar;
+            await wait(PAGE_BAR_POLL_MS);
+        }
+    }
+
+    /**
+     * Reads the rows of the list as it is now: their text hash, number and first row.
+     *
+     * @param {string} tableSelector - CSS selector of the list.
+     * @returns {{$rows: jQuery, read: Object|null, hash: string}} Rows and their text hash.
+     */
+    function readPageRows(tableSelector) {
+        var read = readListRows(tableSelector);
+        var $rows = read ? read.rowInfo.children : $();
+        return { $rows: $rows, read: read, hash: $rows.length ? hashText($rows.text()) : "" };
+    }
+
+    /**
+     * Clicks the page number after the current page in the pagination bar. The current page is
+     * the counter kept by the window; at the start of a crawl, the number the bar marks, else the
+     * counter, else 1. The page then changes, possibly by loading another document: the answer
+     * is sent before the click, and the window then watches the list (see pageNumbersCheck).
+     *
+     * Answers {status: "clicked", current, next, doc, hash}, {status: "last", current} when the
+     * bar has no next number, {status: "missing"} when the bar is not found, or {error}.
+     *
+     * @param {Object} message - {selector, tableSelector, page, atStart, maxWait}.
+     * @param {Function} sendResponse - Chrome message callback.
+     */
+    async function clickNextPageNumber(message, sendResponse) {
+        var bar = await waitForPageBar(message.selector, Math.min(message.maxWait, PAGE_BAR_WAIT_MS));
+        if (!bar) return void sendResponse({ status: "missing" });
+        var numbers = getPageNumbers(bar);
+        var current = message.atStart ? getMarkedPage(bar, numbers) || message.page || 1 : message.page;
+        var next = numbers.find(function(entry) { return entry.number === current + 1; });
+        $(".tablescraper-next-button").removeClass("tablescraper-next-button");
+        $(bar).addClass("tablescraper-next-button");
+        if (!next) return void sendResponse({ status: "last", current: current });
+
+        var rows = readPageRows(message.tableSelector);
+        if (!rows.read) return void sendResponse({ error: "Table not found" });
+        pageWatchRow = rows.$rows[0] || null;
+        var target = getPageNumberTarget(next.element, bar).element;
+        sendResponse({ status: "clicked", current: current, next: next.number, doc: DOCUMENT_TOKEN, hash: rows.hash });
+        // The answer goes first: a click that loads another document ends this script
+        setTimeout(function() {
+            target.scrollIntoView({ block: "center", behavior: "instant" });
+            ["mousedown", "mouseup"].forEach(function(type) {
+                target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+            });
+            clickElement(target);
+        }, 50);
+    }
+
+    /**
+     * Describes the list for the window waiting for the page clicked: the document, the text
+     * hash and number of its rows, and whether the first row of the former page is still there.
+     *
+     * @param {Object} message - {tableSelector}.
+     * @param {Function} sendResponse - Chrome message callback.
+     */
+    function checkPageChange(message, sendResponse) {
+        var rows = readPageRows(message.tableSelector);
+        sendResponse({
+            doc: DOCUMENT_TOKEN,
+            hash: rows.hash,
+            rowCount: rows.$rows.length,
+            firstRowKept: pageWatchRow ? pageWatchRow.isConnected && rows.$rows.index(pageWatchRow) >= 0 : null
+        });
+    }
+
+    /**
+     * Reads every row of the list shown, highlighted like the other reads.
+     * Answers {data, rowCount} or {error}.
+     *
+     * @param {Object} message - {tableSelector}.
+     * @param {Function} sendResponse - Chrome message callback.
+     */
+    function readPageNumberRows(message, sendResponse) {
+        var rows = readPageRows(message.tableSelector);
+        if (!rows.read) return void sendResponse({ error: "Table not found" });
+        detectedTables.length || (detectedTables = [{}]);
+        detectedTables[currentTableIndex].table = rows.read.$table;
+        detectedTables[currentTableIndex].children = rows.$rows;
+        detectedTables[currentTableIndex].goodClasses = rows.read.rowInfo.goodClasses;
+        highlightSelectedTable();
+        listLastRow = rows.$rows.last()[0] || null;
+        sendResponse({ data: extractRows(rows.$rows), rowCount: rows.$rows.length });
+    }
+
+    /**
+     * Shows which bar a pick on the hovered element would choose: the smallest element around it
+     * that looks like a pagination bar (see isPageBarLike), grown to a slightly bigger one holding more (numbers
+     * split into groups). Arrow keys then choose a bigger or smaller element (see
+     * onPageBarPickerKeyDown).
+     *
+     * @param {Element} target - Element under the pointer.
+     */
+    function hoverPageBar(target) {
+        // The same element hovered again (the page moved under the pointer) keeps the level chosen
+        if (buttonPicker.target === target) return;
+        var chain = [];
+        for (var node = target; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+            chain.push(node);
+        }
+        if (!chain.length) return;
+        var level = 0;
+        var numbers = chain.map(getPageNumbers);
+        var counts = numbers.map(function(list) { return list.length; });
+        var smallest = numbers.findIndex(isPageBarLike);
+        if (smallest >= 0) {
+            level = smallest;
+            var height = chain[smallest].getBoundingClientRect().height;
+            while (level + 1 < chain.length && counts[level + 1] > counts[level] &&
+                chain[level + 1].getBoundingClientRect().height <= height + PAGE_BAR_GROW_PX) {
+                level++;
+            }
+        }
+        buttonPicker.target = target;
+        buttonPicker.chain = chain;
+        buttonPicker.level = level;
+        renderPageBarHover();
+    }
+
+    /**
+     * Draws the box of the bar chosen and its label: its tag and first class, how many page
+     * numbers it holds, which ones, and the keys that change it.
+     */
+    function renderPageBarHover() {
+        var element = buttonPicker.chain[buttonPicker.level];
+        var numbers = getPageNumbers(element);
+        buttonPicker.isBar = isPageBarLike(numbers);
+        if (!buttonPicker.hoverBox || buttonPicker.hoverBox.element !== element) {
+            var oldBox = buttonPicker.hoverBox;
+            buttonPicker.hoverBox = addLayerBox(element, "hover");
+            if (oldBox) removeLayerBoxes(function(entry) { return entry === oldBox; });
+        }
+        var label = layer.label;
+        label.textContent = "";
+        var cls = getFirstClass(element);
+        createLayerElement("span", "tag", label).textContent = element.localName + (cls ? "." + cls : "");
+        [
+            ["Found", buttonPicker.isBar ? numbers.length + " page numbers"
+                : (numbers.length > 1 ? numbers.length + " numbers" : numbers.length ? "1 number" : "No page numbers") +
+                ": not a pagination bar"],
+            ["Pages", numbers.map(function(entry) { return entry.number; }).join(" ")],
+            ["Keys", "↑ bigger, ↓ smaller"]
+        ].forEach(function(row) {
+            if (!row[1]) return;
+            createLayerElement("span", "key", label).textContent = row[0];
+            createLayerElement("span", "val", label).textContent = row[1].slice(0, LABEL_VALUE_LENGTH);
+        });
+        label.hidden = false;
+        placeLabelNear(element.getBoundingClientRect());
+    }
+
+    /**
+     * Arrow keys while picking the bar: Up chooses the element around the one shown, Down the
+     * one inside it, towards the hovered element.
+     *
+     * @param {KeyboardEvent} event - Key down event.
+     */
+    function onPageBarPickerKeyDown(event) {
+        if (!buttonPicker || !buttonPicker.chain || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+        buttonPicker.level = event.key === "ArrowUp"
+            ? Math.min(buttonPicker.level + 1, buttonPicker.chain.length - 1)
+            : Math.max(buttonPicker.level - 1, 0);
+        renderPageBarHover();
+        event.preventDefault();
+        event.stopImmediatePropagation();
     }
 
     // --- Page details extraction: highlight layer, field picker and per-page extraction ---
@@ -1502,6 +1873,9 @@
                 updatePickerHover(false);
                 placeInfoLabel();
             }
+            if (buttonPicker && buttonPicker.hoverBox) {
+                placeLabelNear(buttonPicker.hoverBox.element.getBoundingClientRect());
+            }
         });
     }
 
@@ -1860,9 +2234,17 @@
      */
     function placeInfoLabel() {
         var info = getHoveredInfo();
+        if (info) placeLabelNear(info.element.getBoundingClientRect());
+    }
+
+    /**
+     * Places the info label under a box, or above it when there is no room below, always
+     * inside the window.
+     * @param {DOMRect} rect - Box of the highlighted element, in viewport coordinates.
+     */
+    function placeLabelNear(rect) {
         var label = layer && layer.label;
-        if (!label || label.hidden || !info) return;
-        var rect = info.element.getBoundingClientRect();
+        if (!label || label.hidden) return;
         var viewWidth = document.documentElement.clientWidth || window.innerWidth;
         var viewHeight = document.documentElement.clientHeight || window.innerHeight;
         var width = label.offsetWidth;
@@ -2701,6 +3083,21 @@
 
         if ("loadMore" === message.action) {
             loadMoreRows(message, sendResponse);
+            return true;
+        }
+
+        if ("pageNumbersClick" === message.action) {
+            clickNextPageNumber(message, sendResponse);
+            return true;
+        }
+
+        if ("pageNumbersCheck" === message.action) {
+            checkPageChange(message, sendResponse);
+            return true;
+        }
+
+        if ("pageNumbersRead" === message.action) {
+            readPageNumberRows(message, sendResponse);
             return true;
         }
 
