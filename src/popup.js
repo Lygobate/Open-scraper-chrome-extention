@@ -713,6 +713,7 @@
                     scrapingState.lastRows = response.data.length;
                     scrapingState.tableSelector = response.tableSelector;
                     scrapingState.workingTime = 0;
+                    scrapingState.firstRows = response.data.length;
 
                     applyMoreRowsMode();
                     $(".download-button").show();
@@ -785,15 +786,20 @@
     /**
      * Updates the scraping information values displayed in the #stats container.
      * "Load more" counts rounds (clicks that brought rows) instead of pages.
+     * Speed: rows added by crawling (beyond the first read) per minute of working time.
      */
     function updateUiStats() {
         const byRound = getMoreRowsMode() === "loadMore";
+        const addedRows = scrapingState.data.length - scrapingState.firstRows;
+        const speed = addedRows > 0 && scrapingState.workingTime > 0
+            ? (addedRows * 60000 / scrapingState.workingTime).toFixed(1) + " rows / min" : "\u2013";
         $("#stats")
             .empty()
             .append($("<div>", { text: byRound ? "Rounds: " + scrapingState.loadRounds : "Pages scraped: " + scrapingState.pages }))
             .append($("<div>", { text: "Rows collected: " + scrapingState.data.length }))
             .append($("<div>", { text: (byRound ? "Rows from last round: " : "Rows from last page: ") + scrapingState.lastRows }))
-            .append($("<div>", { text: "Working time: " + parseInt(scrapingState.workingTime / 1000) + "s" }));
+            .append($("<div>", { text: "Working time: " + parseInt(scrapingState.workingTime / 1000) + "s" }))
+            .append($("<div>", { text: "Speed: " + speed }));
     }
 
     /**
