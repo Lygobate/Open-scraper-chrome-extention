@@ -692,7 +692,7 @@
             function(response) {
                 if (response && response.error) {
                     showStatusMessage("Something went wrong!", "noResponseErr", true);
-                } else if (response.tableId == scrapingState.tableId) {
+                } else if (response && response.tableId == scrapingState.tableId) {
                     if (response.failedToProcess) {
                         showStatusMessage("Failed to process rows on server. Showing raw data instead.", "error", false);
                         scrapingState.failedToProcess = true;
@@ -764,7 +764,8 @@
 
     /**
      * Stops the current scraping process. A "Load more" round under way ends first
-     * (Max delay at most): the crawl controls come back once it has.
+     * (Max delay at most): the crawl controls come back once it has. "Try another table"
+     * comes back once no round is under way.
      */
     function stopScraping() {
         scrapingState.scraping = false;
@@ -774,6 +775,7 @@
             return showStatusMessage("Stopping...", "instructions");
         }
         $("#startScraping").show();
+        if (!scrapingState.pageRound) $("#wrongTable").show();
         $("#moreRows").prop("disabled", false);
         $("#locateButton").toggle(!!MORE_ROWS_MODES[getMoreRowsMode()].buttonKey);
         showStatusMessage("Crawling stopped. Please download data or continue crawling.", "instructions");
@@ -821,7 +823,6 @@
                     scrapingState.roundPending = false;
                     scrapingState.workingTime += new Date() - startTime;
                     startTime = new Date();
-                    $("#wrongTable").hide();
 
                     if (!response || response.error) {
                         updateUiStats();
@@ -954,12 +955,20 @@
         triggerFindTables();
     }();
 
+    // Another table of the page: its rows replace those collected, as before any crawl. A page
+    // that does not answer (one a crawl opened, still loading) is reloaded and searched again.
     $("#wrongTable").click(function() {
+        if (scrapingState.scraping || scrapingState.roundPending || scrapingState.pageRound) return;
         $("#hot").empty();
+        ["error", "finished", "previewLimit"].forEach(id => showStatusMessage("", id));
         chromeInstance.tabs.sendMessage(
             currentTab.id,
             { action: "nextTable" },
-            onTableDataReceived
+            function(response) {
+                void chromeInstance.runtime.lastError;
+                if (!response) currentTab.reloaded = false;
+                onTableDataReceived(response);
+            }
         );
     });
 
@@ -999,6 +1008,7 @@
         stopButtonPicking();
         scrapingState.scraping = true;
         $("#startScraping").hide();
+        $("#wrongTable").hide();
         $("#stopScraping").show();
         $("#locateButton").hide();
         $("#moreRows").prop("disabled", true);
@@ -1015,8 +1025,10 @@
 
         let startTime = new Date();
 
-        // Start the recursive crawl routine
+        // Start the recursive crawl routine. A round (scroll or click, wait, read) under way
+        // when the crawl stops still reads its page.
         !function crawlNextPage() {
+            scrapingState.pageRound = true;
             const scrollDownPage = function(callback) {
                 chromeInstance.tabs.sendMessage(
                     currentTab.id,
@@ -1026,10 +1038,10 @@
                     },
                     function(response) {
                         if (response && response.error) {
+                            scrapingState.pageRound = false;
                             showStatusMessage("", "instructions");
                             return showStatusMessage(response.error, response.errorId || "error", true);
                         }
-                        $("#wrongTable").hide();
                         callback();
                     }
                 );
@@ -1044,10 +1056,10 @@
                     },
                     function(response) {
                         if (response && response.error) {
+                            scrapingState.pageRound = false;
                             showStatusMessage("", "instructions");
                             return showStatusMessage(response.error, response.errorId, true);
                         }
-                        $("#wrongTable").hide();
                         callback();
                     }
                 );
@@ -1130,6 +1142,7 @@
                             selector: scrapingState.tableSelector
                         },
                         function(response) {
+                            scrapingState.pageRound = false;
                             if (response) {
                                 if (response.error) {
                                     showStatusMessage("", "instructions");
@@ -1170,6 +1183,7 @@
                                     crawlNextPage();
                                 }
                             }
+                            if (!scrapingState.scraping) $("#wrongTable").show();
                         }
                     );
                 },
