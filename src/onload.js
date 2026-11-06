@@ -1886,13 +1886,14 @@
 
     /**
      * Waits until every field has a value (pages that draw their content late), watching the
-     * page's changes, until the time runs out or the page stops changing for FIELD_QUIET_MS.
-     * A page that already shows every field answers at once.
+     * page's changes, until the time runs out or, unless told otherwise, the page stops
+     * changing for FIELD_QUIET_MS. A page that already shows every field answers at once.
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
      * @param {number} timeoutMs - Longest wait.
+     * @param {boolean} [untilTimeout=false] - Ignore the quiet rule (one page, the preview).
      * @returns {Promise<boolean>} True when every field has a value.
      */
-    function waitForFields(fields, timeoutMs) {
+    function waitForFields(fields, timeoutMs, untilTimeout) {
         var allFound = function() {
             return fields.every(function(field) { return !!resolveField(field).value; });
         };
@@ -1915,7 +1916,7 @@
                 scheduled = 0;
                 if (done) return;
                 if (allFound()) finish(true);
-                else if (Date.now() - lastChange >= FIELD_QUIET_MS) finish(false);
+                else if (!untilTimeout && Date.now() - lastChange >= FIELD_QUIET_MS) finish(false);
             };
             // Checks at most once per interval, however many changes the page makes. What this
             // extension draws does not count as a change of the page.
@@ -2009,7 +2010,7 @@
             case "detailsPreview":
                 // Waits for the page to show a field, reads one row and highlights what was found
                 (function(fields) {
-                    waitForFields(fields, message.waitMs).then(function() {
+                    waitForFields(fields, message.waitMs, true).then(function() {
                         try {
                             sendResponse({
                                 ok: true,
