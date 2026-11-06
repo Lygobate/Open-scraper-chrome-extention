@@ -67,9 +67,15 @@
                     <button type="button" class="osd-btn osd-btn-success download-button" id="csv"><span class="glyphicon glyphicon-download-alt"></span> CSV</button>
                     <button type="button" class="osd-btn osd-btn-success download-button" id="xlsx"><span class="glyphicon glyphicon-download-alt"></span> XLSX</button>
                 </div>
+                <form class="osd-prompt" id="listColumnPrompt" hidden>
+                    <label class="osd-prompt-label" for="listColumnPromptInput">Column name</label>
+                    <input type="text" id="listColumnPromptInput" class="osd-input osd-grow" maxlength="120">
+                    <button type="submit" class="osd-btn osd-btn-primary">Save</button>
+                    <button type="button" class="osd-btn" id="listColumnPromptCancel">Cancel</button>
+                </form>
             </div>
             <div class="list-hot-wrap">
-                <div id="hot" class="hot handsontable htRowHeaders htColumnHeaders"></div>
+                <div id="hot" class="hot osd-hot"></div>
             </div>
         </div>
         <div class="col-xs-12 popup-footer" style="display: none !important;">

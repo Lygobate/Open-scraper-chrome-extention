@@ -130,12 +130,6 @@ body {
 
 /* === HOT (Handsontable) === */
 
-#hot {
-    overflow: hidden;
-    border-radius: var(--radius-md);
-    margin-top: 4px;
-}
-
 /* Handsontable dark theme overrides */
 .handsontable {
     font-family: var(--font-family) !important;
@@ -179,27 +173,6 @@ body {
 
 .handsontable .changeType {
     background: var(--bg-surface) !important;
-}
-
-/* Column headers editable input */
-.hot-header {
-    position: relative;
-}
-
-.header-input {
-    color: var(--text-primary);
-}
-
-.remove-column {
-    position: absolute;
-    right: 0;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: color var(--transition-fast);
-}
-
-.remove-column:hover {
-    color: var(--accent-rose);
 }
 
 /* Scrollbar colours for Handsontable. Only colours: a custom width (::-webkit-scrollbar)
