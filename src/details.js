@@ -58,6 +58,8 @@
     const TEMPLATE_VERSION = 1;
     const DEFAULT_WAIT = { min: 2, max: 30 };
     const MAX_TEMPLATE_FIELDS = 200;
+    // Value of the "+ New template…" entry of the template drop-down
+    const NEW_TEMPLATE_VALUE = "__new__";
 
     // Labels that make a three-part registrable domain under a country code (example.co.uk)
     const SECOND_LEVEL_LABELS = new Set(["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gob", "nic", "ltd", "plc", "sch", "mil", "nom", "gouv", "asso"]);
@@ -188,7 +190,8 @@
         if (isBusy()) return step === state.step;
         if (step === 1) return true;
         if (step === 2) return state.validUrls.length > 0;
-        return state.validUrls.length > 0 && !!getSelectedTemplate();
+        const template = getSelectedTemplate();
+        return state.validUrls.length > 0 && !!template && template.fields.length > 0;
     }
 
     /**
@@ -831,7 +834,8 @@
             const name = typeof field.name === "string" && field.name.trim() ? field.name.trim().slice(0, 120) : KIND_LABELS[field.kind];
             fields.push({ id: id, name: name, kind: field.kind, selectors: selectors });
         });
-        if (!fields.length) return null;
+        // A template may have no field yet (just created), but not lose all of them on reading
+        if (!fields.length && raw.fields.length) return null;
         const renames = {};
         if (raw.renames && typeof raw.renames === "object") {
             Object.keys(raw.renames).forEach(key => {
@@ -870,7 +874,7 @@
                 createdAt: set && set.savedAt,
                 updatedAt: set && set.savedAt
             });
-            if (!template) return;
+            if (!template || !template.fields.length) return;
             let name = domain + " details";
             for (let n = 2; templates.some(t => t.domain === domain && t.name === name); n++) name = domain + " details (" + n + ")";
             template.name = name;
@@ -965,8 +969,14 @@
                 select.appendChild(option);
             });
         }
+        if (domain) {
+            const option = document.createElement("option");
+            option.value = NEW_TEMPLATE_VALUE;
+            option.textContent = "+ New template…";
+            select.appendChild(option);
+        }
         select.value = getSelectedTemplate() ? state.templateId : "";
-        select.disabled = isBusy() || !templates.length;
+        select.disabled = isBusy() || !domain;
         updateTemplateMenu();
     }
 
@@ -976,6 +986,8 @@
     function updateTemplateMenu() {
         const hasTemplate = !!getSelectedTemplate();
         $id("detailsTemplateMenuButton").disabled = isBusy();
+        $id("detailsTemplateNew").disabled = !getTestDomain();
+        $id("detailsTemplateDuplicate").disabled = !hasTemplate;
         $id("detailsTemplateRename").disabled = !hasTemplate;
         $id("detailsTemplateExport").disabled = !hasTemplate;
         $id("detailsTemplateDelete").disabled = !hasTemplate;
@@ -1005,7 +1017,12 @@
             stopRun();
             state.templateId = "";
             resetResults();
+            // Another template of the site, if any, takes the place of the deleted one
             if (state.step === 3) showStep(2);
+            else if (state.step === 2 && !chooseTemplateForDomain()) refreshPreview();
+        } else if (state.step === 3 && !canOpenStep(3)) {
+            // The template has no field left
+            showStep(2);
         }
         renderTemplateSelect();
         updateFieldsStepUi();
@@ -1044,21 +1061,62 @@
             showMessage("detailsPickMessage", "Nothing was selected.", "warning");
             return;
         }
+        const template = await addTemplate({ domain: domain, name: domain + " details", fields: fields });
+        if (template) showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
+    }
+
+    /**
+     * Saves a new template and selects it. Its name is made unique on its domain.
+     * @param {{domain: string, name: string, fields: Object[], wait: Object, renames: Object}} props -
+     *     Content of the template (wait and renames are optional).
+     * @returns {Promise<Object|null>} Saved template, or null when it could not be saved.
+     */
+    async function addTemplate(props) {
         const now = new Date().toISOString();
         const template = {
             id: createId("t"),
             version: TEMPLATE_VERSION,
-            domain: domain,
-            name: uniqueTemplateName(domain + " details", domain),
-            fields: fields,
-            wait: normalizeWait(DEFAULT_WAIT),
-            renames: {},
+            domain: props.domain,
+            name: "",
+            fields: props.fields,
+            wait: normalizeWait(props.wait || DEFAULT_WAIT),
+            renames: props.renames || {},
             createdAt: now,
             updatedAt: now
         };
-        if (!(await updateTemplates(templates => { templates.push(template); }))) return;
-        showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
+        const saved = await updateTemplates(templates => {
+            // The name must be unique among the latest stored templates
+            state.templates = templates;
+            template.name = uniqueTemplateName(String(props.name).slice(0, 120), template.domain);
+            templates.push(template);
+        });
+        if (!saved) return null;
         selectTemplate(template.id);
+        return template;
+    }
+
+    /**
+     * Asks for a name and creates an empty template for the test page's domain; its fields are
+     * then selected in the page.
+     */
+    function promptNewTemplate() {
+        const domain = getTestDomain();
+        if (!domain || isBusy()) return;
+        const base = domain + " details";
+        openPrompt("detailsTemplatePrompt", "New template", uniqueTemplateName(base, domain), "Create", async name => {
+            const template = await addTemplate({ domain: domain, name: name || base, fields: [] });
+            if (template) showMessage("detailsPickMessage", "Template \"" + template.name + "\" created. Click \"Select data to extract\" to add its fields.");
+        });
+    }
+
+    /**
+     * Copies a template (fields, wait and column names) into a new one named "<name> (copy)".
+     * @param {Object} template - Template to copy.
+     */
+    async function duplicateTemplate(template) {
+        const copy = JSON.parse(JSON.stringify(template));
+        const created = await addTemplate({ domain: copy.domain, name: copy.name + " (copy)", fields: copy.fields, wait: copy.wait, renames: copy.renames });
+        if (created) showMessage("detailsPickMessage", "Template \"" + template.name + "\" duplicated as \"" + created.name + "\".");
     }
 
     /**
@@ -1233,11 +1291,15 @@
 
     /**
      * Runs a template menu action.
-     * @param {"rename"|"export"|"import"|"delete"} action - Action.
+     * @param {"new"|"duplicate"|"rename"|"export"|"import"|"delete"} action - Action.
      */
     function onTemplateMenuAction(action) {
         closeTemplateMenu();
         const template = getSelectedTemplate();
+        if (action === "new") {
+            promptNewTemplate();
+            return;
+        }
         if (action === "import") {
             $id("detailsTemplateFile").value = "";
             $id("detailsTemplateFile").click();
@@ -1246,6 +1308,8 @@
         if (!template) return;
         if (action === "export") {
             exportTemplate();
+        } else if (action === "duplicate") {
+            duplicateTemplate(template);
         } else if (action === "rename") {
             openPrompt("detailsTemplatePrompt", "Name", template.name, "Save", name => {
                 if (!name) return;
@@ -1256,7 +1320,10 @@
                 updateTemplates(templates => {
                     const index = templates.findIndex(t => t.id === template.id);
                     if (index !== -1) templates.splice(index, 1);
-                }).then(onTemplatesChanged);
+                }).then(saved => {
+                    onTemplatesChanged();
+                    if (saved) showMessage("detailsPickMessage", "Template \"" + template.name + "\" deleted.");
+                });
             });
         }
     }
@@ -1296,15 +1363,17 @@
      */
     function updateFieldsStepUi() {
         const busy = isBusy();
+        const template = getSelectedTemplate();
+        const hasFields = !!template && template.fields.length > 0;
         $id("detailsPickStart").hidden = state.picking;
         $id("detailsPickStart").disabled = busy || !getTestUrl();
-        $id("detailsPickStart").classList.toggle("osd-btn-primary", !getSelectedTemplate());
-        $id("detailsEditFields").hidden = !getSelectedTemplate();
+        $id("detailsPickStart").classList.toggle("osd-btn-primary", !hasFields);
+        $id("detailsEditFields").hidden = !hasFields;
         $id("detailsEditFields").disabled = busy || !getTestUrl();
         $id("detailsPickStop").hidden = !state.picking;
         $id("detailsBackTo1").disabled = busy;
-        $id("detailsToStep3").disabled = busy || !getSelectedTemplate();
-        $id("detailsTemplate").disabled = busy || !getDomainTemplates(getTestDomain()).length;
+        $id("detailsToStep3").disabled = busy || !hasFields;
+        $id("detailsTemplate").disabled = busy || !getTestDomain();
         updateTestUrlUi();
         updateTemplateMenu();
         updateStepper();
@@ -1367,6 +1436,11 @@
         }
         box.hidden = false;
         state.previewUrl = "";
+        if (!template.fields.length) {
+            renderPreviewRows(template, {});
+            $id("detailsPreviewStatus").textContent = "No field yet";
+            return;
+        }
         renderPreviewRows(template, null);
         $id("detailsPreviewStatus").textContent = "Loading the test page…";
         const isCancelled = () => token !== state.previewToken;
@@ -1482,7 +1556,7 @@
                 remove.textContent = "×";
                 remove.title = "Remove this field from the template";
                 remove.setAttribute("aria-label", "Remove field " + name);
-                remove.disabled = template.fields.length < 2 || isBusy();
+                remove.disabled = isBusy();
                 remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
                 removeCell.appendChild(remove);
             }
@@ -1565,13 +1639,12 @@
     }
 
     /**
-     * Removes a field from a template (a template keeps at least one field).
+     * Removes a field from a template.
      * @param {string} templateId - Template id.
      * @param {string} fieldId - Field id.
      */
     async function removeTemplateField(templateId, fieldId) {
         await updateTemplate(templateId, template => {
-            if (template.fields.length < 2) return;
             template.fields = template.fields.filter(field => field.id !== fieldId);
             delete template.renames[fieldId];
         });
@@ -1625,7 +1698,7 @@
             return;
         }
         connectSessionPort(started.doc);
-        showMessage("detailsPickMessage", editing ? "Fields of \"" + editing.name + "\" found in the page are green. Click more data to add, then click Finish." :
+        showMessage("detailsPickMessage", editing && editing.fields.length ? "Fields of \"" + editing.name + "\" found in the page are green. Click more data to add, then click Finish." :
             "Click the data to extract in the page, then click Finish.");
         pollPicks(token);
     }
@@ -1815,7 +1888,7 @@
         const finished = state.nextIndex >= state.urls.length && state.results.length > 0;
         toggle.textContent = state.running ? "Stop" : (finished ? "Restart" : "Start");
         toggle.classList.toggle("osd-btn-danger", state.running);
-        toggle.disabled = !state.running && (state.picking || !getSelectedTemplate() || !state.validUrls.length);
+        toggle.disabled = !state.running && (state.picking || !canOpenStep(3));
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
         ["detailsCsv", "detailsJson", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
@@ -1848,7 +1921,7 @@
             return;
         }
         const template = getSelectedTemplate();
-        if (!template || !state.validUrls.length) return;
+        if (!template || !template.fields.length || !state.validUrls.length) return;
         if (!(await getTargetTab())) {
             showMessage("detailsRunMessage", "The target tab was closed. Close this window and click the extension icon again.", "error");
             return;
@@ -2270,12 +2343,20 @@
 
     $id("detailsTestPrev").addEventListener("click", () => moveTestUrl(-1));
     $id("detailsTestNext").addEventListener("click", () => moveTestUrl(1));
-    $id("detailsTemplate").addEventListener("change", event => selectTemplate(event.target.value));
+    $id("detailsTemplate").addEventListener("change", event => {
+        if (event.target.value !== NEW_TEMPLATE_VALUE) {
+            selectTemplate(event.target.value);
+            return;
+        }
+        event.target.value = getSelectedTemplate() ? state.templateId : "";
+        promptNewTemplate();
+    });
     $id("detailsTemplateMenuButton").addEventListener("click", event => {
         event.stopPropagation();
         toggleTemplateMenu($id("detailsTemplateMenu").hidden);
     });
-    [["detailsTemplateRename", "rename"], ["detailsTemplateExport", "export"], ["detailsTemplateImport", "import"], ["detailsTemplateDelete", "delete"]]
+    [["detailsTemplateNew", "new"], ["detailsTemplateDuplicate", "duplicate"], ["detailsTemplateRename", "rename"],
+        ["detailsTemplateExport", "export"], ["detailsTemplateImport", "import"], ["detailsTemplateDelete", "delete"]]
         .forEach(([id, action]) => $id(id).addEventListener("click", () => onTemplateMenuAction(action)));
     document.addEventListener("click", event => {
         if (!$id("detailsTemplateMenu").hidden && !event.target.closest(".osd-menu-wrap")) closeTemplateMenu();
@@ -2290,7 +2371,11 @@
     $id("detailsTemplateFile").addEventListener("change", event => importTemplate(event.target.files[0]));
     $id("detailsTemplatePromptCancel").addEventListener("click", () => closePrompt("detailsTemplatePrompt"));
     $id("detailsColumnPromptCancel").addEventListener("click", () => closePrompt("detailsColumnPrompt"));
-    $id("detailsPickStart").addEventListener("click", () => startPicking("new"));
+    // An empty template selected gets the picks; otherwise they make a new template
+    $id("detailsPickStart").addEventListener("click", () => {
+        const template = getSelectedTemplate();
+        startPicking(template && !template.fields.length ? "edit" : "new");
+    });
     $id("detailsEditFields").addEventListener("click", () => startPicking("edit"));
     $id("detailsPickStop").addEventListener("click", finishPicking);
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
