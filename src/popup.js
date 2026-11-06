@@ -98,8 +98,11 @@
         none: {},
         scroll: { delays: [1000, 20000] },
         next: { delays: [1000, 20000], buttonKey: "nextSelector:", locateLabel: 'Locate "Next" button' },
-        loadMore: { delays: [1000, 5000], buttonKey: "loadMoreSelector:", locateLabel: 'Locate "Load more" button' }
+        loadMore: { delays: [1000, 5000], buttonKey: "loadMoreSelector:", locateLabel: 'Locate "Load more" button' },
+        pages: { delays: [1000, 20000], buttonKey: "pagesSelector:", locateLabel: "Locate page numbers" }
     };
+    // Interval between two looks at the list while waiting for the page number clicked
+    const PAGE_CHECK_MS = 250;
     // Delays of a site never configured (those of the "Next" button and of scrolling)
     const DEFAULT_DELAYS = [1000, 20000];
     const robotsTxtRules = null;
@@ -507,8 +510,9 @@
     }
 
     /**
-     * Retrieves the pre-saved selector of the "Next" or "Load more" button for this host.
-     * @param {string} mode - "next" or "loadMore".
+     * Retrieves the pre-saved selector of the "Next" or "Load more" button, or of the bar of
+     * page numbers, for this host.
+     * @param {string} mode - "next", "loadMore" or "pages".
      * @returns {string|null} The button selector or null.
      */
     function getButtonSelector(mode) {
@@ -540,7 +544,7 @@
 
     /**
      * Returns the chosen way to get more rows.
-     * @returns {string} "none", "scroll", "next" or "loadMore".
+     * @returns {string} "none", "scroll", "next", "loadMore" or "pages".
      */
     function getMoreRowsMode() {
         return scrapingState.config && MORE_ROWS_MODES[scrapingState.config.moreRows] ? scrapingState.config.moreRows : "none";
@@ -548,7 +552,7 @@
 
     /**
      * Returns the instructions shown for the chosen way to get more rows.
-     * @param {string} mode - "none", "scroll", "next" or "loadMore".
+     * @param {string} mode - "none", "scroll", "next", "loadMore" or "pages".
      * @param {boolean} located - Whether its button is located in the page.
      * @returns {string} Instructions text.
      */
@@ -564,6 +568,11 @@
                 ? '"Load more" button located. Press "Start crawling" to get more rows, or locate it again if it is the wrong one.'
                 : 'Locate the "Load more" button to get more rows.';
         }
+        if (mode === "pages") {
+            return located
+                ? 'Page numbers located. Press "Start crawling" to get more pages, or locate them again if they are the wrong ones.'
+                : "Locate the bar of page numbers to crawl more pages.";
+        }
         return "Download the data, or choose how to get more rows.";
     }
 
@@ -578,6 +587,7 @@
         const selector = modeInfo.buttonKey ? getButtonSelector(mode) : null;
         if (mode === "next") scrapingState.nextSelector = selector;
         if (mode === "loadMore") scrapingState.loadMoreSelector = selector;
+        if (mode === "pages") scrapingState.pagesSelector = selector;
 
         $("#moreRows").val(mode);
         $("#locateButton").text(modeInfo.locateLabel || "").toggle(!!modeInfo.buttonKey);
@@ -663,6 +673,7 @@
         scrapingState.tableSelector = tableData.tableSelector;
         scrapingState.hostName = tableData.hostname;
         scrapingState.pages = 0;
+        scrapingState.pageNumber = null;
 
         scrapingState.previewLength = 0;
         scrapingState.configName = tableData.hostname + "-config";
@@ -863,6 +874,124 @@
         }();
     }
 
+    /**
+     * Sends a message to the page and waits for its answer (undefined when no page answers,
+     * for instance while another document loads).
+     * @param {Object} message - Message.
+     * @returns {Promise<Object|undefined>} Answer.
+     */
+    function askPage(message) {
+        return new Promise(function(resolve) {
+            chromeInstance.tabs.sendMessage(currentTab.id, message, function(response) {
+                void chromeInstance.runtime.lastError;
+                resolve(response);
+            });
+        });
+    }
+
+    /**
+     * Waits for the page shown after a page number was clicked: at least Min delay, then until
+     * the list shows other rows (the same for two looks in a row, so that a list drawn in steps
+     * is read whole), at most Max delay. A list whose rows were replaced by identical ones, or
+     * a new document with the same rows, counts as changed at Max delay only.
+     * @param {Object} clicked - Answer of the click: {doc, hash} of the page clicked from.
+     * @returns {Promise<boolean>} True when the page changed.
+     */
+    async function waitForPageChange(clicked) {
+        const started = Date.now();
+        let previousHash = null;
+        let replaced = false;
+        for (;;) {
+            await new Promise(resolve => setTimeout(resolve, PAGE_CHECK_MS));
+            const elapsed = Date.now() - started;
+            const check = await askPage({ action: "pageNumbersCheck", tableSelector: scrapingState.tableSelector });
+            if (check && check.rowCount) {
+                const stable = check.hash === previousHash;
+                previousHash = check.hash;
+                replaced = check.doc !== clicked.doc || check.firstRowKept === false;
+                if (check.hash !== clicked.hash && stable && elapsed >= scrapingState.config.crawlDelay) return true;
+            } else {
+                previousHash = null;
+            }
+            if (elapsed >= scrapingState.config.maxWait) return replaced;
+        }
+    }
+
+    /**
+     * Crawls the pages of a bar of page numbers. Each round finds the bar again (sites draw it
+     * again), clicks the number after the current page, waits for the page to change and adds
+     * all its rows: identical rows of different pages are all kept. The current page is a
+     * counter, numbers' positions in the bar are never used. Stops when the bar has no next
+     * number (last page), when the bar is gone (warning), when the page does not change within
+     * Max delay, or when the user stops.
+     */
+    function crawlWithPageNumbers() {
+        let startTime = new Date();
+        let atStart = true;
+
+        const endRound = function(finishedMessage, errorMessage) {
+            scrapingState.roundPending = false;
+            scrapingState.workingTime += new Date() - startTime;
+            updateUiStats();
+            stopScraping();
+            if (finishedMessage) showStatusMessage(finishedMessage, "finished");
+            if (errorMessage) {
+                showStatusMessage("", "instructions");
+                showStatusMessage(errorMessage, "error", true);
+            }
+        };
+
+        !async function pageRound() {
+            scrapingState.roundPending = true;
+            const clicked = await askPage({
+                action: "pageNumbersClick",
+                selector: scrapingState.pagesSelector,
+                tableSelector: scrapingState.tableSelector,
+                page: scrapingState.pageNumber,
+                atStart: atStart,
+                maxWait: scrapingState.config.maxWait
+            });
+            atStart = false;
+            $("#wrongTable").hide();
+            if (!clicked || clicked.error) {
+                return endRound(null, clicked ? clicked.error : "The page did not answer. Reload it and try again.");
+            }
+            if (clicked.status === "missing") {
+                return endRound("The page numbers weren't found on page " + (scrapingState.pageNumber || 1) +
+                    '. If there are more pages, locate them again and press "Start crawling".');
+            }
+            if (clicked.status === "last") {
+                scrapingState.pageNumber = clicked.current;
+                return endRound("Last page reached (page " + clicked.current + "). Download CSV or Excel file.");
+            }
+
+            if (!await waitForPageChange(clicked)) {
+                scrapingState.pageNumber = clicked.current;
+                return endRound("Clicking page " + clicked.next + " didn't change the list within Max delay. " +
+                    "If there are more pages, raise Max delay or locate the page numbers again.");
+            }
+            const response = await askPage({ action: "pageNumbersRead", tableSelector: scrapingState.tableSelector });
+            if (!response || response.error) {
+                return endRound(null, response ? response.error : "The page did not answer. Reload it and try again.");
+            }
+            scrapingState.pageNumber = clicked.next;
+            addCollectedRows(response.data, false);
+            scrapingState.rowCount = response.rowCount;
+            scrapingState.lastRows = response.data.length;
+            scrapingState.pages++;
+            scrapingState.roundPending = false;
+            scrapingState.workingTime += new Date() - startTime;
+            startTime = new Date();
+            updateUiStats();
+            if (scrapingState.previewLength < PREVIEW_LIMIT) {
+                renderHandsontable();
+            } else {
+                showStatusMessage("Preview limited to 1000 rows.", "previewLimit");
+            }
+            return scrapingState.scraping ? pageRound() : stopScraping();
+        }();
+    }
+
     // --- Main Interface Initialization Routine ---
     !async function initializePopup() {
         $("#stopScraping").click(stopScraping);
@@ -971,10 +1100,12 @@
         const pickId = (scrapingState.pickId || 0) + 1;
         scrapingState.pickId = pickId;
         scrapingState.gettingNext = true;
-        showStatusMessage(
-            mode === "next" ? 'Click the "Next" button or link in the page.' : 'Click the "Load more" button in the page.',
-            "instructions"
-        );
+        const pickInstructions = {
+            next: 'Click the "Next" button or link in the page.',
+            loadMore: 'Click the "Load more" button in the page.',
+            pages: "Point at the page numbers in the page: the box shows the bar found (\u2191 \u2193 make it bigger or smaller). Then click."
+        };
+        showStatusMessage(pickInstructions[mode], "instructions");
 
         chromeInstance.tabs.sendMessage(
             currentTab.id,
@@ -988,6 +1119,10 @@
                 localStorage.setItem(modeInfo.buttonKey + scrapingState.hostName, response.selector);
                 if (mode === "next") scrapingState.nextSelector = response.selector;
                 if (mode === "loadMore") scrapingState.loadMoreSelector = response.selector;
+                if (mode === "pages") {
+                    scrapingState.pagesSelector = response.selector;
+                    scrapingState.pageNumber = null;
+                }
                 $("#startScraping").show();
                 showStatusMessage(getMoreRowsInstructions(mode, true), "instructions");
             }
@@ -1005,12 +1140,15 @@
         showStatusMessage("", "error");
         showStatusMessage("", "finished");
         showStatusMessage(
-            mode === "next" ? 'Please wait for more pages or press "Stop crawling".' : 'Please wait for more rows or press "Stop crawling".',
+            mode === "next" || mode === "pages" ? 'Please wait for more pages or press "Stop crawling".' : 'Please wait for more rows or press "Stop crawling".',
             "instructions"
         );
 
         if (mode === "loadMore") {
             return crawlWithLoadMore();
+        }
+        if (mode === "pages") {
+            return crawlWithPageNumbers();
         }
 
         let startTime = new Date();
