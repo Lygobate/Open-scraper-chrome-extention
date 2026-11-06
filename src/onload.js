@@ -352,10 +352,14 @@
         return $(element).trigger("mouseleave").trigger("blur")
             .parents().addBack().not("html").not("body").map(function() {
                 var tag = this.tagName.toLowerCase();
+                // Classes this extension adds (highlights) are left out: they come and go
+                var pageClasses = typeof this.className === "string"
+                    ? this.className.trim().split(/\s+/).filter(function(cls) { return cls && !isOwnClass(cls); }).join(" ")
+                    : "";
                 if (typeof this.id === "string" && this.id.trim() && !this.id.match(/\d+/g)) {
                     tag += escapeCssSelectorPart(this.id, "#");
-                } else if (typeof this.className === "string" && this.className.trim()) {
-                    tag += escapeCssSelectorPart(this.className).replace(/\s+/g, ".");
+                } else if (pageClasses) {
+                    tag += escapeCssSelectorPart(pageClasses).replace(/\s+/g, ".");
                 }
                 return tag;
             }).get().join(">");
