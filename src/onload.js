@@ -519,6 +519,12 @@
     var fieldPicker = null;
     var pickedFields = [];
     var pendingPickerPolls = [];
+    // Pointer events aimed at the layer are stopped on the window in the capture phase, before the
+    // page's own document and element listeners see them, then handed to the layer's handlers
+    var LAYER_EVENT_TYPES = ["click", "dblclick", "auxclick", "contextmenu", "mousedown", "mouseup", "mousemove",
+        "mouseover", "mouseout", "pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointercancel",
+        "touchstart", "touchmove", "touchend"];
+    var layerHandlers = new WeakMap();
 
     /**
      * Trims a text and collapses its inner whitespace to single spaces.
@@ -947,15 +953,48 @@
         layer.dim.hidden = true;
         layer.catcher.hidden = true;
         layer.label.hidden = true;
-        // Clicks and presses on the layer never reach the page's own listeners
-        ["click", "dblclick", "auxclick", "mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend", "contextmenu"].forEach(function(type) {
-            root.addEventListener(type, function(event) { event.stopPropagation(); });
-        });
         document.documentElement.appendChild(host);
+        LAYER_EVENT_TYPES.forEach(function(type) { window.addEventListener(type, routeLayerEvent, true); });
         document.addEventListener("scroll", scheduleLayerPlacement, true);
         window.addEventListener("resize", scheduleLayerPlacement);
+        clearInterval(layerTimer);
         layerTimer = setInterval(scheduleLayerPlacement, BOX_REFRESH_MS);
         return layer;
+    }
+
+    /**
+     * Adds or removes a handler for an event on an element of the layer. These events never
+     * reach the page (see routeLayerEvent), so the layer's elements do not listen themselves.
+     * @param {Element} node - Element of the layer.
+     * @param {string} type - One of LAYER_EVENT_TYPES.
+     * @param {Function} handler - Called with the event.
+     * @param {boolean} [remove] - True to remove the handler.
+     */
+    function onLayerEvent(node, type, handler, remove) {
+        var handlers = layerHandlers.get(node) || {};
+        layerHandlers.set(node, handlers);
+        handlers[type] = (handlers[type] || []).filter(function(other) { return other !== handler; });
+        if (!remove) handlers[type].push(handler);
+    }
+
+    /**
+     * Window capture listener: an event aimed at the layer is stopped there, so no page listener
+     * (capture or bubble, on the document or on an element) runs for it, then the layer's own
+     * handlers run from the target up to the host.
+     * @param {Event} event - Pointer, mouse or touch event.
+     */
+    function routeLayerEvent(event) {
+        if (!layer) return;
+        var path = event.composedPath();
+        var hostIndex = path.indexOf(layer.host);
+        if (hostIndex < 0) return;
+        event.stopPropagation();
+        for (var i = 0; i < hostIndex; i++) {
+            var handlers = layerHandlers.get(path[i]);
+            if (handlers && handlers[event.type]) {
+                handlers[event.type].slice().forEach(function(handler) { handler(event); });
+            }
+        }
     }
 
     /**
@@ -963,6 +1002,7 @@
      */
     function releaseLayerIfIdle() {
         if (!layer || fieldPicker || layerBoxes.length || (layer.busy && !layer.busy.hidden)) return;
+        LAYER_EVENT_TYPES.forEach(function(type) { window.removeEventListener(type, routeLayerEvent, true); });
         document.removeEventListener("scroll", scheduleLayerPlacement, true);
         window.removeEventListener("resize", scheduleLayerPlacement);
         clearInterval(layerTimer);
@@ -1406,17 +1446,17 @@
         var finish = createLayerElement("button", "finish", panel);
         finish.type = "button";
         finish.textContent = "Finish";
-        finish.addEventListener("click", function() { stopFieldPicker(); });
+        onLayerEvent(finish, "click", function() { stopFieldPicker(); });
 
         // Dragging by the header keeps the panel inside the window
         var drag = null;
-        head.addEventListener("pointerdown", function(event) {
+        onLayerEvent(head, "pointerdown", function(event) {
             var rect = panel.getBoundingClientRect();
             drag = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
             head.setPointerCapture(event.pointerId);
             event.preventDefault();
         });
-        head.addEventListener("pointermove", function(event) {
+        onLayerEvent(head, "pointermove", function(event) {
             if (!drag) return;
             var maxLeft = document.documentElement.clientWidth - panel.offsetWidth;
             var maxTop = document.documentElement.clientHeight - panel.offsetHeight;
@@ -1425,8 +1465,8 @@
             panel.style.top = Math.max(0, Math.min(maxTop, event.clientY - drag.dy)) + "px";
         });
         var endDrag = function() { drag = null; };
-        head.addEventListener("pointerup", endDrag);
-        head.addEventListener("pointercancel", endDrag);
+        onLayerEvent(head, "pointerup", endDrag);
+        onLayerEvent(head, "pointercancel", endDrag);
         return panel;
     }
 
@@ -1455,8 +1495,8 @@
             pickedKinds: new Map(),
             port: null
         };
-        parts.catcher.addEventListener("mousemove", onPickerPointerMove);
-        parts.catcher.addEventListener("click", onPickerClick);
+        onLayerEvent(parts.catcher, "mousemove", onPickerPointerMove);
+        onLayerEvent(parts.catcher, "click", onPickerClick);
         window.addEventListener("keydown", onPickerKeyDown, true);
         window.focus();
     }
@@ -1469,8 +1509,8 @@
         cancelAnimationFrame(fieldPicker.moveFrame);
         window.removeEventListener("keydown", onPickerKeyDown, true);
         if (layer) {
-            layer.catcher.removeEventListener("mousemove", onPickerPointerMove);
-            layer.catcher.removeEventListener("click", onPickerClick);
+            onLayerEvent(layer.catcher, "mousemove", onPickerPointerMove, true);
+            onLayerEvent(layer.catcher, "click", onPickerClick, true);
             layer.catcher.hidden = true;
             layer.dim.hidden = true;
             layer.label.hidden = true;
