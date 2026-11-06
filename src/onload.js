@@ -612,24 +612,9 @@
     var HIDDEN_TEXT_PARENTS = /^(script|style|noscript|template|title)$/;
 
     /**
-     * Tells whether an element is rendered but hidden from sight on purpose, the way pages keep
-     * a full copy of a value for screen readers (transparent, clipped, 1 px or off-screen).
-     * @param {Element} element - Element.
-     * @param {CSSStyleDeclaration} style - Its computed style.
-     * @returns {boolean} True when visually hidden.
-     */
-    function isVisuallyHidden(element, style) {
-        if (parseFloat(style.opacity) === 0) return true;
-        if (style.position !== "absolute" && style.position !== "fixed") return false;
-        var rect = element.getBoundingClientRect();
-        return rect.width <= 1 || rect.height <= 1 || (style.clip && style.clip !== "auto") ||
-            (style.clipPath && style.clipPath !== "none") || rect.right + window.scrollX <= 0 || rect.bottom + window.scrollY <= 0;
-    }
-
-    /**
      * Lists the rendered text pieces of an element, in document order, with their boxes.
      * @param {Element} element - Element to read.
-     * @returns {Array<Object>|null} Pieces {text, first, last, size, hidden}, or null when the
+     * @returns {Array<Object>|null} Pieces {text, first, last, size}, or null when the
      *     element has too many text nodes to be read this way.
      */
     function getTextPieces(element) {
@@ -637,15 +622,6 @@
         var styleOf = function(node) {
             if (!styles.has(node)) styles.set(node, getComputedStyle(node));
             return styles.get(node);
-        };
-        var hiddenRoots = new Map();
-        // The closest visually hidden ancestor inside the element (the element itself excluded)
-        var hiddenRootOf = function(node) {
-            if (node === element || !node) return null;
-            if (!hiddenRoots.has(node)) {
-                hiddenRoots.set(node, isVisuallyHidden(node, styleOf(node)) ? node : hiddenRootOf(node.parentElement));
-            }
-            return hiddenRoots.get(node);
         };
         var pieces = [];
         var range = document.createRange();
@@ -669,8 +645,7 @@
                 text: /\S/.test(text) ? text : " ",
                 first: rects[0],
                 last: rects[rects.length - 1],
-                size: parseFloat(style.fontSize) || 16,
-                hidden: hiddenRootOf(parent)
+                size: parseFloat(style.fontSize) || 16
             });
         }
         return pieces;
@@ -679,7 +654,8 @@
     /**
      * Tells whether two consecutive text pieces are apart on screen: on different lines (unless
      * the second one starts right where the first ends, like a superscript), or on the same
-     * line with a gap wider than a fraction of a space.
+     * line with a gap wider than a fraction of a space, or overlapping (a piece positioned
+     * over the other is not part of the same word).
      * @param {Object} a - First piece.
      * @param {Object} b - Next piece.
      * @returns {boolean} True when a space separates them.
@@ -690,7 +666,7 @@
         var tolerance = 0.2 * Math.min(a.size, b.size);
         var gap = Math.max(right.left - left.right, left.left - right.right);
         var sameLine = right.top < left.bottom && right.bottom > left.top;
-        if (sameLine) return gap > tolerance;
+        if (sameLine) return Math.abs(gap) > tolerance;
         return !(right.left >= left.right - 1 && right.left - left.right <= tolerance);
     }
 
@@ -712,27 +688,16 @@
     }
 
     /**
-     * Reads the text of an element as shown on screen. Inline pieces are joined without the
-     * line breaks innerText adds around floated, positioned or flex pieces. When the element
-     * holds a visually hidden copy of what it shows in pieces (a full price kept for screen
-     * readers), that copy is used. Large or unrendered elements are read with innerText.
+     * Reads the text of an element as shown on screen. Inline pieces that touch are joined
+     * without the line breaks innerText adds around floated, positioned or flex pieces (a
+     * price split into "11", ",", "95", "€"). Large or unrendered elements are read with
+     * innerText.
      * @param {HTMLElement} element - Element to read.
      * @returns {string} Raw text (not cleaned).
      */
     function readRenderedText(element) {
         var pieces = getTextPieces(element);
         if (!pieces || !pieces.some(function(piece) { return piece.text !== " "; })) return element.innerText;
-        var visible = pieces.filter(function(piece) { return !piece.hidden; });
-        if (visible.length < pieces.length && visible.some(function(piece) { return piece.text !== " "; })) {
-            var squash = function(text) { return cleanText(text).replace(/\s+/g, ""); };
-            var shown = squash(joinTextPieces(visible));
-            var roots = [];
-            pieces.forEach(function(piece) { if (piece.hidden && roots.indexOf(piece.hidden) === -1) roots.push(piece.hidden); });
-            for (var i = 0; i < roots.length; i++) {
-                var copy = joinTextPieces(pieces.filter(function(piece) { return piece.hidden === roots[i]; }));
-                if (shown && squash(copy) === shown) return copy;
-            }
-        }
         return joinTextPieces(pieces);
     }
 
