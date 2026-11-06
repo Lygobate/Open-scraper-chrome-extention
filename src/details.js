@@ -1503,7 +1503,7 @@
         toggle.disabled = !state.running && (state.picking || !getSelectedTemplate() || !state.validUrls.length);
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
-        ["detailsCsv", "detailsXlsx", "detailsCopy"].forEach(id => { if ($id(id)) $id(id).disabled = !count; });
+        ["detailsCsv", "detailsJson", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
         if (!count) showMessage("detailsExportMessage", "");
     }
 
@@ -1779,8 +1779,22 @@
     }
 
     /**
+     * Downloads the results as JSON: an indented array with one object per page, URL first.
+     * @param {{fields: string[], data: string[][]}} table - Results table.
+     * @param {string} fileName - Name of the downloaded file.
+     */
+    function exportJson(table, fileName) {
+        const records = table.data.map(row => {
+            const record = {};
+            table.fields.forEach((name, col) => { record[name] = row[col] == null ? "" : row[col]; });
+            return record;
+        });
+        saveAs(new Blob([JSON.stringify(records, null, 2)], { type: "application/json" }), fileName);
+    }
+
+    /**
      * Runs one of the shared export helpers of popup.js on the results.
-     * @param {"csv"|"xlsx"|"copy"} format - Export format.
+     * @param {"csv"|"json"|"xlsx"|"copy"} format - Export format.
      */
     function exportResults(format) {
         const helpers = window.OpenScraper;
@@ -1788,6 +1802,8 @@
         const table = buildResultsTable();
         if (format === "csv") {
             helpers.exportCsv(table, getExportFileBase() + ".csv", { bom: true });
+        } else if (format === "json") {
+            exportJson(table, getExportFileBase() + ".json");
         } else if (format === "xlsx") {
             helpers.exportXlsx(table, getExportFileBase() + ".xlsx", "Page details");
         } else {
@@ -1849,6 +1865,7 @@
     ["mousedown", "click"].forEach(type => $id("detailsHot").addEventListener(type, onGridHeaderAction, true));
 
     $id("detailsCsv").addEventListener("click", () => exportResults("csv"));
+    $id("detailsJson").addEventListener("click", () => exportResults("json"));
     $id("detailsXlsx").addEventListener("click", () => exportResults("xlsx"));
     $id("detailsCopy").addEventListener("click", () => exportResults("copy"));
 
