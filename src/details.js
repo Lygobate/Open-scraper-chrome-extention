@@ -1797,8 +1797,8 @@
     }
 
     /**
-     * Adds one row to the grid without rebuilding it. The view follows the new row only when
-     * it was already showing the last rows.
+     * Adds one row to the grid without rebuilding it. The horizontal scroll never moves; the
+     * view follows the new row only when it was already showing the last rows.
      * @param {Object} result - New result.
      */
     function appendGridRow(result) {
@@ -1809,9 +1809,12 @@
         }
         const holder = $id("detailsHot").querySelector(".ht_master .wtHolder");
         const atBottom = !holder || holder.scrollTop + holder.clientHeight >= holder.scrollHeight - 30;
+        const left = holder ? holder.scrollLeft : 0;
         state.gridData.push(toGridRow(template, result));
         state.grid.render();
-        if (atBottom) state.grid.scrollViewportTo(state.gridData.length - 1, 0);
+        if (!holder) return;
+        if (atBottom) holder.scrollTop = holder.scrollHeight;
+        if (holder.scrollLeft !== left) holder.scrollLeft = left;
     }
 
     /**
