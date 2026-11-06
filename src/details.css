@@ -615,6 +615,29 @@ body.mode-details .details-panel {
     border-bottom: 1px solid var(--border-glass);
 }
 
+.osd-preview-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+/* Discreet icon button: no frame until hovered */
+.osd-btn.osd-preview-reload {
+    flex: 0 0 22px;
+    width: 22px;
+    height: 22px;
+    font-size: 14px;
+    color: var(--text-muted);
+    background: transparent;
+    border-color: transparent;
+}
+
+.osd-btn.osd-preview-reload:hover:not(:disabled) {
+    color: var(--accent-teal);
+    background: var(--bg-glass-hover);
+    border-color: var(--border-glass-hover);
+}
+
 .osd-preview-table {
     width: 100%;
     table-layout: fixed;

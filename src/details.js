@@ -115,6 +115,10 @@
         previewDoc: "",
         pageWatchTimer: 0,
         previewLoading: false,
+        // A preview read is under way (the reload button is off)
+        previewReading: false,
+        // The last preview read the page shown in the tab rather than the test page
+        previewShownPage: false,
         promptAction: null,
         columnPromptAction: null,
         waitSaveTimer: 0
@@ -1380,9 +1384,27 @@
         $id("detailsBackTo1").disabled = busy;
         $id("detailsToStep3").disabled = busy || !hasFields;
         $id("detailsTemplate").disabled = busy || !getTestDomain();
+        updatePreviewReloadUi();
         updateTestUrlUi();
         updateTemplateMenu();
         updateStepper();
+    }
+
+    /**
+     * Turns the preview's reload button off while picking, running or reading.
+     */
+    function updatePreviewReloadUi() {
+        const template = getSelectedTemplate();
+        $id("detailsPreviewReload").disabled = isBusy() || state.previewReading || !template || !template.fields.length;
+    }
+
+    /**
+     * Reads the test page again after scrolling through it, whatever "Load full page" says
+     * (content that only loads once scrolled to).
+     */
+    function reloadPreview() {
+        if (isBusy() || state.previewReading) return;
+        refreshPreview({ shownPage: state.previewShownPage, fullPage: true });
     }
 
     /**
@@ -1428,12 +1450,33 @@
 
     /**
      * Loads the test page if needed, reads one row (at once, then again once late fields show)
-     * and highlights in the page the elements found.
-     * @param {{shownPage: boolean}} [options] - shownPage: read the page shown in the tab as it
-     *     is (the user opened another page of the site there) instead of the test page.
+     * and highlights in the page the elements found. The reload button is off meanwhile.
+     * @param {{shownPage: boolean, fullPage: boolean}} [options] - shownPage: read the page
+     *     shown in the tab as it is (the user opened another page of the site there) instead of
+     *     the test page; fullPage: scroll through the page first even when the template's "Load
+     *     full page" is off (reload button).
      */
     async function refreshPreview(options) {
         const token = ++state.previewToken;
+        state.previewReading = true;
+        state.previewShownPage = !!(options && options.shownPage);
+        updatePreviewReloadUi();
+        try {
+            await readPreview(token, options);
+        } finally {
+            if (token === state.previewToken) {
+                state.previewReading = false;
+                updatePreviewReloadUi();
+            }
+        }
+    }
+
+    /**
+     * Reads the preview for refreshPreview.
+     * @param {number} token - Preview token: a newer preview cancels this one.
+     * @param {{shownPage: boolean, fullPage: boolean}} [options] - See refreshPreview.
+     */
+    async function readPreview(token, options) {
         const template = getSelectedTemplate();
         const box = $id("detailsPreview");
         if (!template || state.step !== 2) {
@@ -1464,10 +1507,12 @@
         }
         $id("detailsPreviewStatus").textContent = "Reading…";
         const fields = template.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
-        // Read at once, then, if fields are missing, again once they show (or the wait ends);
-        // with "Load full page", the first read scrolls through the page first, like a run
+        // With "Load full page" (or the reload button), the first read scrolls through the page
+        // first, like a run
+        const scrollFirst = template.fullPage || !!(options && options.fullPage);
+        // Read at once, then, if fields are missing, again once they show (or the wait ends)
         for (const waitMs of [0, LATE_FIELDS_WAIT_MS]) {
-            const fullPage = template.fullPage && !waitMs;
+            const fullPage = scrollFirst && !waitMs;
             const response = await sendToTab({ action: "detailsPreview", fields: fields, waitMs: waitMs,
                 fullPage: fullPage, limitMs: fullPage ? Math.max(1, template.wait.max) * 1000 : 0 });
             if (isCancelled()) return;
@@ -2560,6 +2605,7 @@
     });
     previewBody.addEventListener("dragend", endFieldDrag);
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
+    $id("detailsPreviewReload").addEventListener("click", reloadPreview);
     $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));

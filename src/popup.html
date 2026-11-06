@@ -167,7 +167,10 @@
             <div class="osd-preview" id="detailsPreview" hidden>
                 <div class="osd-preview-head">
                     <span>Preview of the test page</span>
-                    <span class="osd-count" id="detailsPreviewStatus"></span>
+                    <span class="osd-preview-status">
+                        <span class="osd-count" id="detailsPreviewStatus"></span>
+                        <button type="button" class="osd-btn osd-btn-icon osd-preview-reload" id="detailsPreviewReload" aria-label="Reload the values" title="Reload the values: scrolls through the test page to load all its content, then reads the fields again."><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.6 1.6v3.2H9.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </span>
                 </div>
                 <table class="osd-preview-table">
                     <tbody id="detailsPreviewBody"></tbody>
