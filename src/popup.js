@@ -80,18 +80,6 @@
         });
     }
 
-    /**
-     * Safely executes a function by catching exceptions.
-     * @param {Function} fn - Function to execute.
-     */
-    function safeExecute(fn) {
-        try {
-            fn();
-        } catch (error) {
-            console.error("Error caught during safe execution:", error);
-        }
-    }
-
     // --- Global State Variables ---
 
     // Active tab data extracted from the popup URL
@@ -295,9 +283,6 @@
             })
         };
 
-        scrapingState.names = optimalFields;
-        scrapingState.namePaths = fieldNamePaths;
-
         return tabularResult;
     }
 
@@ -397,103 +382,6 @@
         window.addEventListener("copy", copyListener);
         document.execCommand("copy");
         window.removeEventListener("copy", copyListener);
-    }
-
-    /**
-     * Analyzes header configurations and creates selector rules for the active table's columns.
-     */
-    function analyzeAndSaveTableSelector() {
-        (() => {
-            const parseSelectors = str => str.split(",").map(item => item.slice(-100));
-            const createSelectorObj = array => {
-                const selectors = {};
-                for (let i = 0; i < 4; i++) {
-                    selectors[`selector${i}`] = array[i] !== undefined ? array[i] : "";
-                }
-                return selectors;
-            };
-
-            const headersCount = Object.keys(scrapingState.config.headers).length;
-            if (headersCount) {
-                (async (includeDeleted = false) => {
-                    const cleanTableSelector = scrapingState.tableSelector.replace(".tablescraper-selected-table", "");
-                    const classRules = scrapingState.goodClasses.map(cls => cls.split(" ").map(item => "." + item).join(""));
-                    const rulesArray = [];
-
-                    classRules.forEach(rule => {
-                        const cleanRule = rule.replace(/.tablescraper-selected-row/g, "");
-                        if (cleanRule.length) {
-                            rulesArray.push(cleanTableSelector + " " + cleanRule + ":not(:empty)");
-                        }
-                    });
-
-                    if (!rulesArray.length) {
-                        rulesArray.push(cleanTableSelector + " > *:not(:empty)");
-                    }
-
-                    const joinedRules = rulesArray.join(",");
-                    const fieldSelectors = [];
-                    let targetFields = scrapingState.names;
-
-                    if (includeDeleted) {
-                        targetFields = targetFields.concat(Object.keys(scrapingState.config.deletedFields));
-                    }
-
-                    for (const field of targetFields) {
-                        const path = scrapingState.namePaths[field];
-                        const selectorRule = { target: "text", field_id: field, param: "" };
-                        if (scrapingState.config.headers[field]) {
-                            selectorRule.field_id = scrapingState.config.headers[field];
-                        }
-
-                        const generatedSelectors = [];
-                        for (const subPath of path) {
-                            let matchedSelector = "";
-                            try {
-                                console.log("Looking for selector...");
-                                matchedSelector = await requestSelectorFromTab(joinedRules, subPath);
-                            } catch (err) {
-                                console.error(err);
-                            }
-                            console.log("Selector found:", matchedSelector);
-                            generatedSelectors.push(matchedSelector);
-
-                            const splitSubPath = subPath.split(" ");
-                            if (splitSubPath.filter(word => word === "href").length) {
-                                selectorRule.target = "prop";
-                                selectorRule.param = "href";
-                            }
-                            if (splitSubPath.filter(word => word === "src").length) {
-                                selectorRule.target = "prop";
-                                selectorRule.param = "src";
-                            }
-                        }
-                        selectorRule.selector = generatedSelectors.join(",");
-                        fieldSelectors.push(selectorRule);
-                    }
-                    return [joinedRules, fieldSelectors];
-                })(true).then(result => {
-                    const [tableRules, selectors] = result;
-                    const findSelectorByField = fieldId => selectors.find(s => s.field_id === fieldId);
-                    const baseMetadata = {
-                        tableId: scrapingState.tableId,
-                        hostName: scrapingState.hostName,
-                        startingUrl: scrapingState.startingUrl
-                    };
-
-                    for (const originalName in scrapingState.config.headers) {
-                        const selectorInfo = findSelectorByField(scrapingState.config.headers[originalName]);
-                        if (selectorInfo) {
-                            const parsed = parseSelectors(selectorInfo.selector);
-                            Object.assign(createSelectorObj(parsed), baseMetadata, {
-                                originalName: originalName,
-                                newName: scrapingState.config.headers[originalName]
-                            });
-                        }
-                    }
-                });
-            }
-        })();
     }
 
     /**
@@ -641,7 +529,6 @@
         scrapingState.failedToProcess = false;
         scrapingState.processingError = null;
         scrapingState.tableSelector = tableData.tableSelector;
-        scrapingState.startingUrl = tableData.href;
         scrapingState.hostName = tableData.hostname;
         scrapingState.pages = 0;
 
@@ -721,7 +608,6 @@
                     scrapingState.pages = 1;
                     scrapingState.lastRows = response.data.length;
                     scrapingState.tableSelector = response.tableSelector;
-                    scrapingState.goodClasses = response.goodClasses;
                     scrapingState.workingTime = 0;
 
                     updateUiStats();
@@ -734,14 +620,12 @@
                         .off("click")
                         .click(function() {
                             console.log("Downloading CSV...");
-                            safeExecute(analyzeAndSaveTableSelector);
                             exportCsv(prepareDataForExport(scrapingState.data), domainKey + ".csv");
                         });
 
                     $("#xlsx")
                         .off("click")
                         .click(function() {
-                            safeExecute(analyzeAndSaveTableSelector);
                             exportXlsx(
                                 prepareDataForExport(scrapingState.data),
                                 domainKey + ".xlsx",
@@ -752,7 +636,6 @@
                     $("#copy")
                         .off("click")
                         .click(function() {
-                            safeExecute(analyzeAndSaveTableSelector);
                             copyTsv(prepareDataForExport(scrapingState.data));
                         });
                 }
@@ -805,22 +688,6 @@
             .append($("<div>", { text: "Rows collected: " + scrapingState.data.length }))
             .append($("<div>", { text: "Rows from last page: " + scrapingState.lastRows }))
             .append($("<div>", { text: "Working time: " + parseInt(scrapingState.workingTime / 1000) + "s" }));
-    }
-
-    /**
-     * Asks the active tab to calculate an optimal column selector.
-     * @param {string} rowSelector - Data row selector.
-     * @param {string} path - Path of the cell to analyze.
-     * @returns {Promise<string>} Promise resolved with the CSS selector.
-     */
-    async function requestSelectorFromTab(rowSelector, path) {
-        const response = await chromeInstance.tabs.sendMessage(currentTab.id, {
-            action: "chooseSelector",
-            rowSelector: rowSelector,
-            path: path
-        });
-        if (!response) throw new Error("Unable to choose a selector!");
-        return response.selector;
     }
 
     // --- Main Interface Initialization Routine ---
