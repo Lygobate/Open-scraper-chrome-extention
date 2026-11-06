@@ -2171,6 +2171,14 @@
             clearAllHighlights();
             (async function scrollDownUntilNewRows(tableSelector, sendResponse) {
                 /**
+                 * Scrolls an element down at once. Pages that ask for smooth scrolling
+                 * (scroll-behavior: smooth) would otherwise only move it after an animation.
+                 * @param {Element} el - The element to scroll.
+                 * @param {number} amount - Amount to scroll in pixels.
+                 */
+                let scrollElementBy = (el, amount) => el.scrollBy({ top: amount, behavior: "instant" });
+
+                /**
                  * Attempts to scroll an element down by 50px and checks if it can scroll.
                  * @param {Element} el - The scrollable element.
                  * @returns {Promise<boolean>} True if the element has reached scroll threshold.
@@ -2179,7 +2187,7 @@
                     if (el.scrollTop + 5 >= 50) {
                         resolve(true);
                     } else {
-                        el.scrollTop = el.scrollTop + 50;
+                        scrollElementBy(el, 50);
                         setTimeout(() => {
                             resolve(el.scrollTop + 5 >= 50);
                         }, 10);
@@ -2193,7 +2201,7 @@
                  * @returns {Promise<void>}
                  */
                 let scrollByAmount = (el, amount) => new Promise((resolve) => {
-                    el.scrollTop = el.scrollTop + amount;
+                    scrollElementBy(el, amount);
                     setTimeout(() => { resolve(); }, 1000);
                 });
 
