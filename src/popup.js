@@ -397,6 +397,7 @@
         let hasRendered = false;
 
         $("#hot").empty();
+        scrapingState.tableTop = $("#hot").get(0).getBoundingClientRect().y;
 
         const footerEl = document.querySelector(".popup-footer");
         const footerHeight = footerEl ? footerEl.getBoundingClientRect().height : 52;
@@ -757,6 +758,17 @@
         // The window may be resized before the first rows arrive
         $(window).resize(function() {
             if (scrapingState.data) renderHandsontable();
+        });
+
+        // Controls and messages shown or hidden above the table move it down or up after
+        // it was drawn: draw it again to fit the window. The columns above it are floated,
+        // so each is watched (their container keeps no height of its own).
+        const tableMoveObserver = new ResizeObserver(function() {
+            if (!scrapingState.data || !$("#content").is(":visible")) return;
+            if ($("#hot").get(0).getBoundingClientRect().y !== scrapingState.tableTop) renderHandsontable();
+        });
+        $("#content .popup-content-body").children().not(":has(#hot)").each(function() {
+            tableMoveObserver.observe(this);
         });
 
         // Start the initial table search
