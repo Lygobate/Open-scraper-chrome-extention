@@ -25,6 +25,8 @@
     // before the grid follows a change of the window size
     const GRID_BOTTOM_SPACE = 36;
     const GRID_FIT_DELAY_MS = 100;
+    // Height of the grid's column headers: completion line, then the column name
+    const GRID_HEADER_HEIGHT = 38;
     // Delay after the target tab finished loading a page before step 2 previews it again
     const PAGE_WATCH_DELAY_MS = 300;
     // How long "show in page" highlights a field
@@ -78,7 +80,7 @@
         previewValues: null,
         renaming: false,
         previewUrl: "",
-        emptyCounts: null,
+        filledCounts: null,
         gridSize: null,
         gridFitTimer: 0,
         results: [],
@@ -1788,7 +1790,6 @@
         toggle.disabled = !state.running && (state.picking || !getSelectedTemplate() || !state.validUrls.length);
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
-        renderEmptyStats();
         ["detailsCsv", "detailsJson", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
         if (!count) showMessage("detailsExportMessage", "");
     }
@@ -1908,41 +1909,25 @@
     // --- Results grid ---
 
     /**
-     * Counts, per field of the selected template, the pages read where it came back empty.
-     * Pages that could not be read at all are not counted.
-     * @returns {{read: number, empty: Object<string, number>}} Pages read, empty count by field id.
+     * Counts, per column of the selected template, the rows where it has a value.
+     * @returns {{rows: number, filled: Object<string, number>}} Rows so far, filled count by
+     *     field id ("url" for the URL column).
      */
-    function getEmptyCounts() {
+    function getFilledCounts() {
         const template = getSelectedTemplate();
         const key = template ? template.id + "|" + template.fields.map(field => field.id).join(",") + "|" + state.results.length : "";
-        if (state.emptyCounts && state.emptyCounts.key === key && state.emptyCounts.results === state.results) return state.emptyCounts;
-        const counts = { key: key, results: state.results, read: 0, empty: {} };
-        state.emptyCounts = counts;
+        if (state.filledCounts && state.filledCounts.key === key && state.filledCounts.results === state.results) return state.filledCounts;
+        const counts = { key: key, results: state.results, rows: state.results.length, filled: { url: 0 } };
+        state.filledCounts = counts;
         if (!template) return counts;
-        template.fields.forEach(field => { counts.empty[field.id] = 0; });
+        template.fields.forEach(field => { counts.filled[field.id] = 0; });
         state.results.forEach(result => {
-            if (result.failed || !Object.keys(result.values).length) return;
-            counts.read++;
+            if (String(result.url || "").trim()) counts.filled.url++;
             template.fields.forEach(field => {
-                if (!result.values[field.id]) counts.empty[field.id]++;
+                if (result.values[field.id]) counts.filled[field.id]++;
             });
         });
         return counts;
-    }
-
-    /**
-     * Shows, next to the row count, the fields that came back empty on some pages, so that a
-     * weak field is easy to spot.
-     */
-    function renderEmptyStats() {
-        const template = getSelectedTemplate();
-        const line = $id("detailsEmptyStats");
-        const counts = getEmptyCounts();
-        const parts = template ? template.fields.filter(field => counts.empty[field.id] > 0)
-            .map(field => getFieldColumnName(template, field) + " " + counts.empty[field.id] + "/" + counts.read) : [];
-        line.textContent = parts.length ? "Empty: " + parts.join(" · ") : "";
-        line.title = parts.length ? "Pages where the field was not found or had no value, out of the pages read" : "";
-        line.hidden = !parts.length;
     }
 
     /**
@@ -2061,17 +2046,21 @@
             colHeaders: col => {
                 const name = escapeHtml(columns[col] || "");
                 const field = col > 0 ? template.fields[col - 1] : null;
-                const counts = field ? getEmptyCounts() : null;
-                const empty = counts ? counts.empty[field.id] || 0 : 0;
-                const tip = empty ? name + "&#10;Empty on " + empty + " of " + counts.read + " pages" : name;
+                // Completion line above the name: rows with a value / rows so far (not data)
+                const counts = getFilledCounts();
+                const filled = counts.filled[field ? field.id : "url"] || 0;
+                const stat = counts.rows ? filled + "/" + counts.rows : "&nbsp;";
+                const statTip = counts.rows ? ' title="' + filled + " of " + counts.rows + ' rows have a value"' : "";
                 const show = col > 0 ? '<button type="button" class="osd-col-action" data-col-action="show" data-col="' + col +
                     '" title="Show in page">&#9673;</button>' : "";
-                return '<span class="osd-col-head"><span class="osd-col-name' + (empty ? " has-empty" : "") + '" title="' + tip + '">' + name + "</span>" +
+                return '<span class="osd-col-stat' + (counts.rows && filled < counts.rows ? " is-partial" : "") + '"' + statTip + ">" + stat + "</span>" +
+                    '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
                     '<button type="button" class="osd-col-action" data-col-action="rename" data-col="' + col +
                     '" title="Rename column">&#9998;</button>' + show + "</span>";
             },
             columns: columns.map(() => ({ readOnly: true })),
             rowHeaders: true,
+            columnHeaderHeight: GRID_HEADER_HEIGHT,
             readOnly: true,
             wordWrap: false,
             manualColumnResize: true,
