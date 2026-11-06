@@ -766,6 +766,23 @@ body.mode-details .details-panel {
 .osd-results-head {
     margin-top: 14px;
 }
+.osd-empty-stats {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--accent-amber);
+}
+.osd-hot .osd-col-name.has-empty::after {
+    content: "";
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-left: 4px;
+    vertical-align: middle;
+    background: var(--accent-amber);
+    border-radius: 50%;
+}
 
 .osd-hot {
     margin-top: 8px;
