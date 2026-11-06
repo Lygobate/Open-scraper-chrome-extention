@@ -2076,10 +2076,35 @@
         toggle.textContent = state.running ? "Stop" : (finished ? "Restart" : "Start");
         toggle.classList.toggle("osd-btn-danger", state.running);
         toggle.disabled = !state.running && (state.picking || !canOpenStep(3));
+        $id("detailsReset").disabled = isBusy() || !hasRunProgress();
+        if ($id("detailsReset").disabled) closePrompt("detailsResetPrompt");
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
         ["detailsCsv", "detailsJson", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
         if (!count) showMessage("detailsExportMessage", "");
+    }
+
+    /**
+     * Tells whether the run has anything to reset: rows, time spent, or pages visited.
+     * @returns {boolean} True when Reset has something to clear.
+     */
+    function hasRunProgress() {
+        return state.results.length > 0 || state.nextIndex > 0 || state.elapsedMs > 0;
+    }
+
+    /**
+     * Asks before deleting the rows of the run; on Reset, the next Start begins with the first
+     * URL. The template, the URLs, the options and the column order stay as they are.
+     */
+    function askResetRun() {
+        if (isBusy() || !hasRunProgress()) return;
+        const count = state.results.length;
+        openPrompt("detailsResetPrompt", count ? "Delete the " + plural(count, "extracted row") + " and start again from the first URL?" :
+            "Start again from the first URL?", null, "Reset", () => {
+            if (isBusy()) return;
+            resetResults();
+            showMessage("detailsRunMessage", "Results deleted. Start begins with the first URL.", "info");
+        });
     }
 
     /**
@@ -2103,6 +2128,7 @@
      */
     async function startRun() {
         if (isBusy()) return;
+        closePrompt("detailsResetPrompt");
         if (isListCrawlRunning()) {
             showMessage("detailsRunMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
             return;
@@ -2555,11 +2581,14 @@
             closeTemplateMenu();
             closePrompt("detailsTemplatePrompt");
             closePrompt("detailsColumnPrompt");
+            closePrompt("detailsResetPrompt");
         }
     });
     $id("detailsTemplateFile").addEventListener("change", event => importTemplate(event.target.files[0]));
     $id("detailsTemplatePromptCancel").addEventListener("click", () => closePrompt("detailsTemplatePrompt"));
     $id("detailsColumnPromptCancel").addEventListener("click", () => closePrompt("detailsColumnPrompt"));
+    $id("detailsResetPromptCancel").addEventListener("click", () => closePrompt("detailsResetPrompt"));
+    $id("detailsReset").addEventListener("click", askResetRun);
     // An empty template selected gets the picks; otherwise they make a new template
     $id("detailsPickStart").addEventListener("click", () => {
         const template = getSelectedTemplate();

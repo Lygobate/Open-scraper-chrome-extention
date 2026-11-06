@@ -222,7 +222,16 @@
                     <p class="osd-hint">Saved in the template.</p>
                 </div>
             </details>
-            <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
+            <div class="osd-run-buttons">
+                <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
+                <button type="button" class="osd-btn osd-btn-reset" id="detailsReset" title="Delete the extracted rows and start again from the first URL"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4M6.6 6.5v4.5M9.4 6.5v4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Reset</button>
+            </div>
+            <form class="osd-prompt osd-prompt-question" id="detailsResetPrompt" hidden>
+                <label class="osd-prompt-label" for="detailsResetPromptInput"></label>
+                <input type="text" id="detailsResetPromptInput" class="osd-input" hidden>
+                <button type="submit" class="osd-btn osd-btn-danger">Reset</button>
+                <button type="button" class="osd-btn" id="detailsResetPromptCancel">Cancel</button>
+            </form>
             <div class="osd-message" id="detailsRunMessage" role="status" hidden></div>
             </div>
             <div class="osd-row osd-results-head">

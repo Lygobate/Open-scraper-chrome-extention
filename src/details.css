@@ -329,6 +329,36 @@ body.mode-details .details-panel {
     border-color: #fb7185;
 }
 
+/* Start / Stop with the smaller Reset button beside it */
+.osd-run-buttons {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    margin-top: 12px;
+}
+
+.osd-run-buttons .osd-btn-block {
+    flex: 1 1 auto;
+    margin: 0;
+}
+
+.osd-btn.osd-btn-reset {
+    flex: 0 0 auto;
+    gap: 6px;
+    height: 36px;
+    padding: 0 12px;
+    color: var(--accent-rose);
+    background: var(--accent-rose-dim);
+    border-color: rgba(244, 63, 94, 0.35);
+}
+
+.osd-btn.osd-btn-reset:hover:not(:disabled) {
+    color: #fff;
+    background: var(--accent-rose);
+    border-color: var(--accent-rose);
+}
+
 .osd-btn-success {
     color: var(--accent-emerald);
     background: var(--accent-emerald-dim);
@@ -564,6 +594,11 @@ body.mode-details .details-panel {
     background: var(--bg-deep);
     border: 1px solid var(--border-glass-hover);
     border-radius: var(--radius-sm);
+}
+
+.osd-prompt-question .osd-prompt-label {
+    flex: 1 1 auto;
+    white-space: normal;
 }
 
 .osd-prompt-label {
