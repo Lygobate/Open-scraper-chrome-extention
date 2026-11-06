@@ -754,8 +754,9 @@
             }
         }, 50000);
 
+        // The window may be resized before the first rows arrive
         $(window).resize(function() {
-            renderHandsontable();
+            if (scrapingState.data) renderHandsontable();
         });
 
         // Start the initial table search
