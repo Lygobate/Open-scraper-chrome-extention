@@ -1578,8 +1578,11 @@
             catcher.style.pointerEvents = "";
         }
         var documentScroller = document.scrollingElement || document.documentElement;
+        // The body's overflow applies to the window unless the root element sets its own:
+        // then the body is a box of its own, which pages use as their scroller
+        var bodyIsBox = getComputedStyle(document.documentElement).overflowY !== "visible";
         while (element && element !== documentScroller && element !== document.documentElement) {
-            if (element !== document.body && element !== layer.host) {
+            if ((element !== document.body || bodyIsBox) && element !== layer.host) {
                 var style = getComputedStyle(element);
                 var canY = dy && /^(auto|scroll|overlay)$/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1 &&
                     (dy > 0 ? element.scrollTop + element.clientHeight < element.scrollHeight - 1 : element.scrollTop > 0);
