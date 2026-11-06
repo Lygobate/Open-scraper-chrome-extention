@@ -507,6 +507,68 @@
     }
 
     /**
+     * Downloads a table as a CSV file. Array cells are flattened to a quoted CSV string.
+     * The input table is not modified.
+     * @param {{fields: string[], data: Array<Array<*>>}} table - Headers and rows to export.
+     * @param {string} fileName - Name of the downloaded file.
+     * @param {{bom: boolean}} [options] - With bom, the file starts with a UTF-8 byte order mark
+     *     and ends with a line break, so that spreadsheet apps read accented text correctly.
+     */
+    function exportCsv(table, fileName, options) {
+        const csvOptions = { quotes: true, escapeChar: '"' };
+        const flattened = {
+            fields: table.fields.slice(),
+            data: table.data.map(row => row.map(cell => (
+                Array.isArray(cell) ? Papa.unparse([cell], csvOptions) : cell
+            )))
+        };
+        const text = Papa.unparse(flattened, csvOptions);
+        const withBom = !!(options && options.bom);
+        saveAs(
+            new Blob([withBom ? "\uFEFF" + text + "\r\n" : text], { type: "application/octet-stream" }),
+            fileName
+        );
+    }
+
+    /**
+     * Downloads a table as an XLSX file. The input table is not modified.
+     * @param {{fields: string[], data: Array<Array<*>>}} table - Headers and rows to export.
+     * @param {string} fileName - Name of the downloaded file.
+     * @param {string} sheetName - Name of the Excel worksheet.
+     */
+    function exportXlsx(table, fileName, sheetName) {
+        const copy = { fields: table.fields.slice(), data: table.data.slice() };
+        saveAs(
+            new Blob(
+                [stringToArrayBuffer(generateXlsxBinary(copy, sheetName))],
+                { type: "application/octet-stream" }
+            ),
+            fileName
+        );
+    }
+
+    /**
+     * Copies a table to the clipboard as tab-separated values. The input table is not modified.
+     * @param {{fields: string[], data: Array<Array<*>>}} table - Headers and rows to copy.
+     */
+    function copyTsv(table) {
+        const tsvString = Papa.unparse({ fields: table.fields, data: table.data }, {
+            delimiter: "\t"
+        });
+        const copyListener = function(e) {
+            e.preventDefault();
+            if (e.clipboardData) {
+                e.clipboardData.setData("text/plain", tsvString);
+            } else if (window.clipboardData) {
+                window.clipboardData.setData("Text", tsvString);
+            }
+        };
+        window.addEventListener("copy", copyListener);
+        document.execCommand("copy");
+        window.removeEventListener("copy", copyListener);
+    }
+
+    /**
      * Analyzes header configurations and creates selector rules for the active table's columns.
      */
     function analyzeAndSaveTableSelector() {
@@ -858,50 +920,17 @@
                         .click(function() {
                             console.log("Downloading CSV...");
                             safeExecute(analyzeAndSaveTableSelector);
-
-                            const prepared = prepareDataForExport(scrapingState.data);
-                            prepared.data.forEach((row, rowIdx) => {
-                                row.forEach((cell, colIdx) => {
-                                    if (Array.isArray(cell)) {
-                                        prepared.data[rowIdx][colIdx] = Papa.unparse([cell], {
-                                            quotes: true,
-                                            escapeChar: '"'
-                                        });
-                                    }
-                                });
-                            });
-
-                            saveAs(
-                                new Blob(
-                                    [
-                                        Papa.unparse(prepared, {
-                                            quotes: true,
-                                            escapeChar: '"'
-                                        })
-                                    ],
-                                    { type: "application/octet-stream" }
-                                ),
-                                domainKey + ".csv"
-                            );
+                            exportCsv(prepareDataForExport(scrapingState.data), domainKey + ".csv");
                         });
 
                     $("#xlsx")
                         .off("click")
                         .click(function() {
                             safeExecute(analyzeAndSaveTableSelector);
-                            saveAs(
-                                new Blob(
-                                    [
-                                        stringToArrayBuffer(
-                                            generateXlsxBinary(
-                                                prepareDataForExport(scrapingState.data),
-                                                currentTab.url.substring(0, 100)
-                                            )
-                                        )
-                                    ],
-                                    { type: "application/octet-stream" }
-                                ),
-                                domainKey + ".xlsx"
+                            exportXlsx(
+                                prepareDataForExport(scrapingState.data),
+                                domainKey + ".xlsx",
+                                currentTab.url.substring(0, 100)
                             );
                         });
 
@@ -909,20 +938,7 @@
                         .off("click")
                         .click(function() {
                             safeExecute(analyzeAndSaveTableSelector);
-                            const tsvString = Papa.unparse(prepareDataForExport(scrapingState.data), {
-                                delimiter: "\t"
-                            });
-                            const copyListener = function(e) {
-                                e.preventDefault();
-                                if (e.clipboardData) {
-                                    e.clipboardData.setData("text/plain", tsvString);
-                                } else if (window.clipboardData) {
-                                    window.clipboardData.setData("Text", tsvString);
-                                }
-                            };
-                            window.addEventListener("copy", copyListener);
-                            document.execCommand("copy");
-                            window.removeEventListener("copy", copyListener);
+                            copyTsv(prepareDataForExport(scrapingState.data));
                         });
                 }
             }
@@ -1304,5 +1320,20 @@
                 }
             );
         }();
+    });
+
+    // Shared helpers for the other panels of the scraping window (see details.js)
+    window.OpenScraper = Object.freeze({
+        exportCsv: exportCsv,
+        exportXlsx: exportXlsx,
+        copyTsv: copyTsv,
+        /**
+         * Returns the list results as displayed (renamed headers), or null before the first read.
+         * @returns {{fields: string[], data: Array<Array<*>>}|null} Table of the list tab.
+         */
+        getListResults: function() {
+            if (!scrapingState.data || !scrapingState.config) return null;
+            return prepareDataForExport(scrapingState.data);
+        }
     });
 })();
