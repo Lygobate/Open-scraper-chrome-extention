@@ -590,7 +590,9 @@
      * then "complete" (the tab status alone can still describe the previous page for a moment,
      * whose content script would answer). When the tab already shows that exact URL, the page
      * is only asked whether it is ready; a change of the #fragment only is detected by the
-     * address the page reports, so it never waits for a load that does not happen.
+     * address the page reports, so it never waits for a load that does not happen. A page that
+     * cannot be reached (network error, refused connection, download) fails at once instead of
+     * waiting for the time limit.
      * With the early option (runs), the page counts as ready as soon as it is parsed and its
      * content script answers, without waiting for its images, frames or ads: the document that
      * answers must then be another one than the page shown before (asked first), or be at the
@@ -613,6 +615,14 @@
 
         let loadingSeen = false;
         let loaded = false;
+        // Only the requests of this navigation count: the one it replaces is aborted meanwhile
+        let unreachable = false;
+        const requestIds = new Set();
+        const requestFilter = { urls: ["<all_urls>"], tabId: targetTabId, types: ["main_frame"] };
+        const onRequest = details => { requestIds.add(details.requestId); };
+        const onError = details => {
+            if (requestIds.has(details.requestId)) unreachable = true;
+        };
         const onUpdated = (tabId, changeInfo) => {
             if (tabId !== targetTabId) return;
             if (changeInfo.status === "loading") {
@@ -634,9 +644,17 @@
         if (!alreadyThere) {
             chromeInstance.tabs.onUpdated.addListener(onUpdated);
             try {
+                chromeInstance.webRequest.onBeforeRequest.addListener(onRequest, requestFilter);
+                chromeInstance.webRequest.onErrorOccurred.addListener(onError, requestFilter);
+            } catch (error) {
+                // Without it, an unreachable page waits for the time limit
+            }
+            try {
                 await chromeInstance.tabs.update(targetTabId, { url: url });
             } catch (error) {
                 chromeInstance.tabs.onUpdated.removeListener(onUpdated);
+                chromeInstance.webRequest.onBeforeRequest.removeListener(onRequest);
+                chromeInstance.webRequest.onErrorOccurred.removeListener(onError);
                 return false;
             }
         }
@@ -646,7 +664,7 @@
         // A page already shown but without a content script (opened before the extension) is reloaded once
         let reloadAt = alreadyThere ? Date.now() + 1000 : 0;
         try {
-            while (Date.now() < deadline && !isCancelled()) {
+            while (Date.now() < deadline && !isCancelled() && !unreachable) {
                 const current = await getTargetTab();
                 if (!current) return false;
                 if ((early || current.status === "complete") && (loadingSeen || Date.now() >= askFrom)) {
@@ -671,6 +689,8 @@
             return false;
         } finally {
             chromeInstance.tabs.onUpdated.removeListener(onUpdated);
+            chromeInstance.webRequest.onBeforeRequest.removeListener(onRequest);
+            chromeInstance.webRequest.onErrorOccurred.removeListener(onError);
         }
     }
 
