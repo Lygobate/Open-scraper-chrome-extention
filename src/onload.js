@@ -535,22 +535,69 @@
         return (text || "").replace(/\s+/g, " ").trim();
     }
 
+    // Named HTML entities decoded when a page shows them as text ("&amp;nbsp;" in the HTML,
+    // or a string set as text by a script, displays as "&nbsp;")
+    var TEXT_ENTITIES = {
+        nbsp: "\u00a0", amp: "&", AMP: "&", quot: '"', QUOT: '"', apos: "'", lt: "<", LT: "<", gt: ">", GT: ">",
+        ensp: "\u2002", emsp: "\u2003", thinsp: "\u2009", ndash: "\u2013", mdash: "\u2014", hellip: "\u2026",
+        lsquo: "\u2018", rsquo: "\u2019", ldquo: "\u201c", rdquo: "\u201d", laquo: "\u00ab", raquo: "\u00bb",
+        euro: "\u20ac", copy: "\u00a9", reg: "\u00ae", trade: "\u2122"
+    };
+    // An entity name is read whole ("&copyright" is not "&copy"), the final semicolon is optional
+    var TEXT_ENTITY_PATTERN = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z]{2,8}));?/g;
+
+    /**
+     * Decodes the HTML entities left as text in a value (double-escaped pages), with a fixed
+     * table: page text is never parsed as HTML. Repeated for "&amp;amp;nbsp;"-like chains.
+     * @param {string} text - Raw text.
+     * @returns {string} Decoded text.
+     */
+    function decodeTextEntities(text) {
+        var decode = function(match, decimal, hex, name) {
+            if (name) {
+                if (Object.prototype.hasOwnProperty.call(TEXT_ENTITIES, name)) return TEXT_ENTITIES[name];
+                // "&nbspVAT": like the HTML parser, a leading "nbsp" without semicolon still counts
+                return name.indexOf("nbsp") === 0 && match.slice(-1) !== ";" ? "\u00a0" + name.slice(4) : match;
+            }
+            var code = decimal ? parseInt(decimal, 10) : parseInt(hex, 16);
+            if (!(code > 0 && code <= 0x10ffff) || (code >= 0xd800 && code <= 0xdfff)) return match;
+            return String.fromCodePoint(code);
+        };
+        var result = text || "";
+        for (var pass = 0; pass < 3 && result.indexOf("&") !== -1; pass++) {
+            var next = result.replace(TEXT_ENTITY_PATTERN, decode);
+            if (next === result) break;
+            result = next;
+        }
+        return result;
+    }
+
+    /**
+     * Cleans a text value: entities shown as text are decoded, non-breaking and other Unicode
+     * spaces become plain spaces, whitespace is collapsed and trimmed.
+     * @param {string} text - Raw text.
+     * @returns {string} Clean text.
+     */
+    function cleanText(text) {
+        return normalizeWhitespace(decodeTextEntities(text).replace(/[\u00a0\u202f\u2007\u2000-\u200a]/g, " "));
+    }
+
     /**
      * Reads the visible text of an element: typed value for form fields, chosen label for a
      * drop-down list, rendered text otherwise. Non-HTML elements (SVG) have no text.
      * @param {Element} element - Element to read.
-     * @returns {string} Normalized text, or "".
+     * @returns {string} Clean text (see cleanText), or "".
      */
     function getElementText(element) {
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-            return normalizeWhitespace(element.value);
+            return cleanText(element.value);
         }
         if (element instanceof HTMLSelectElement) {
             var option = element.options[element.selectedIndex];
-            return option ? normalizeWhitespace(option.text) : "";
+            return option ? cleanText(option.text) : "";
         }
         if (!(element instanceof HTMLElement)) return "";
-        return normalizeWhitespace(element.innerText);
+        return cleanText(element.innerText);
     }
 
     /**
