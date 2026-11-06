@@ -14,7 +14,7 @@ Open Scraper is a browser extension that extracts tabular data from the web page
 - **Tabs**: used to identify the active tab and its site hostname, and to communicate with the page being scraped.
 
 ### What the extension stores
-The extension stores, locally in the browser only (`chrome.storage.local` and `localStorage`), the user's own settings: saved scraping presets per website, the selector of the "Next" button, and a short history of content hashes used to detect that a table has changed. This data never leaves the device and can be erased by removing the extension or clearing its data.
+The extension stores, locally in the browser only (`chrome.storage.local` and `localStorage`), the user's own settings: column and crawl settings per website, page details templates, the selector of the "Next" button, and a short history of content hashes used to detect that a table has changed. This data never leaves the device and can be erased by removing the extension or clearing its data.
 
 ### Remote code
 All code is bundled in the extension package. No remote code is loaded or executed.
