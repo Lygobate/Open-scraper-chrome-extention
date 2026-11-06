@@ -91,6 +91,12 @@
     // Current scraping state and active configuration
     const scrapingState = {};
     const PREVIEW_LIMIT = 1000;
+    // Height of the grid's column headers (fill count above the name) and space kept below it
+    const GRID_HEADER_HEIGHT = 38;
+    const GRID_BOTTOM_SPACE = 8;
+    // Widest a column gets, and room taken in a header by its two buttons and padding
+    const MAX_COL_WIDTH = 200;
+    const HEADER_ACTIONS_WIDTH = 56;
 
     // Ways to get more rows than the page shows at first: Min / Max delay defaults (ms), the
     // localStorage key prefix of the page button they click and the label of the action locating it
@@ -396,15 +402,67 @@
     }
 
     /**
-     * Renders the interactive data grid using the Handsontable library.
+     * Escapes text for use in HTML.
+     * @param {*} value - Text.
+     * @returns {string} Escaped text.
+     */
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+    }
+
+    /**
+     * Tells whether a cell holds a value (an empty text or list counts as none).
+     * @param {*} cell - Cell value.
+     * @returns {boolean} True when filled.
+     */
+    function isFilledCell(cell) {
+        if (cell === null || cell === undefined) return false;
+        if (Array.isArray(cell)) return cell.some(isFilledCell);
+        return String(cell).trim() !== "";
+    }
+
+    /**
+     * Returns the "x/y" line shown above a column name: rows with a value / rows collected.
+     * @param {number} filled - Rows with a value.
+     * @param {number} rows - Rows collected.
+     * @returns {string} HTML of the line.
+     */
+    function getColumnStatHtml(filled, rows) {
+        if (!rows) return '<span class="osd-col-stat">&nbsp;</span>';
+        return '<span class="osd-col-stat' + (filled < rows ? " is-partial" : "") + '" title="' + filled + " of " + rows +
+            ' rows have a value">' + filled + "/" + rows + "</span>";
+    }
+
+    /**
+     * Returns the width a column needs to show its whole name beside its header buttons.
+     * @param {string} name - Column name.
+     * @returns {number} Width in pixels.
+     */
+    function getHeaderWidth(name) {
+        const canvas = getHeaderWidth.canvas || (getHeaderWidth.canvas = document.createElement("canvas"));
+        const context = canvas.getContext("2d");
+        context.font = "500 12px " + getComputedStyle(document.body).fontFamily;
+        return Math.ceil(context.measureText(name).width) + HEADER_ACTIONS_WIDTH;
+    }
+
+    /**
+     * Renders the interactive data grid using the Handsontable library. Each column header
+     * shows its fill count, its name and its actions: rename (pencil) and delete (cross).
      */
     function renderHandsontable() {
         const previewData = findOptimalDataFields(scrapingState.data);
+        const rowTotal = previewData.data.length;
+        const filledCounts = previewData.fields.map((_, col) => previewData.data.filter(row => isFilledCell(row[col])).length);
+        const headers = applyHeaderRenames(previewData.fields);
+        const headerWidths = headers.map(getHeaderWidth);
         previewData.data = previewData.data.slice(0, PREVIEW_LIMIT);
         scrapingState.previewLength = previewData.data.length;
+        scrapingState.gridFields = previewData.fields;
+        $("#listRowCount").text(rowTotal + (rowTotal === 1 ? " row" : " rows"));
 
-        const scrollTop = $(".wtHolder").scrollTop();
-        const scrollLeft = $(".wtHolder").scrollLeft();
+        const oldHolder = document.querySelector("#hot .ht_master .wtHolder");
+        const scrollTop = oldHolder ? oldHolder.scrollTop : 0;
+        const scrollLeft = oldHolder ? oldHolder.scrollLeft : 0;
         let hasRendered = false;
 
         $("#hot").empty();
@@ -415,69 +473,36 @@
 
         new Handsontable($("#hot").get(0), {
             data: previewData.data,
-            colHeaders: applyHeaderRenames(previewData.fields),
+            colHeaders: function(col) {
+                const name = escapeHtml(headers[col] || "");
+                return getColumnStatHtml(filledCounts[col] || 0, rowTotal) +
+                    '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
+                    '<button type="button" class="osd-col-action" data-col-action="rename" data-col="' + col +
+                    '" title="Rename column">&#9998;</button>' +
+                    '<button type="button" class="osd-col-action" data-col-action="delete" data-col="' + col +
+                    '" title="Delete column">&times;</button></span>';
+            },
+            rowHeaders: previewData.fields.length > 0,
+            columnHeaderHeight: GRID_HEADER_HEIGHT,
             wordWrap: false,
             manualColumnResize: true,
             width: $(window).width() - 20,
-            height: $(window).height() - $("#hot").get(0).getBoundingClientRect().y - footerHeight,
+            height: $(window).height() - $("#hot").get(0).getBoundingClientRect().y - footerHeight - GRID_BOTTOM_SPACE,
             afterRender: function() {
                 if (!hasRendered) {
                     hasRendered = true;
-                    $(".wtHolder").scrollTop(scrollTop);
-                    $(".wtHolder").scrollLeft(scrollLeft);
+                    const holder = document.querySelector("#hot .ht_master .wtHolder");
+                    if (holder) {
+                        // The headers follow the cells on a scroll event only
+                        holder.scrollTop = scrollTop;
+                        holder.scrollLeft = scrollLeft;
+                        holder.dispatchEvent(new Event("scroll"));
+                    }
                 }
             },
             modifyColWidth: function(width, colIdx) {
-                if (width > 200) return 200;
-            },
-            afterGetColHeader: function(colIdx, headerCell) {
-                if (colIdx !== -1) {
-                    if ($(headerCell).children().length > 1) {
-                        $(".hot-header", headerCell).remove();
-                    } else {
-                        $(headerCell).click(function() {
-                            const self = this;
-                            setTimeout(function() {
-                                $(".header-input", self).trigger("focus");
-                            }, 20);
-                        });
-                    }
-
-                    const $headerContainer = $("<div>", { class: "hot-header" });
-                    const $headerInput = $("<div>", {
-                        class: "header-input",
-                        contenteditable: "true"
-                    });
-
-                    if (scrapingState.config.headers[previewData.fields[colIdx]]) {
-                        $headerInput.text(scrapingState.config.headers[previewData.fields[colIdx]]);
-                    } else {
-                        $headerInput.text(headerCell.firstChild.textContent);
-                    }
-
-                    $headerContainer.append($headerInput);
-
-                    // Column deletion button
-                    $headerContainer.append(
-                        $("<span>", {
-                            class: "glyphicon glyphicon-remove remove-column",
-                            style: "padding-top: 2.5px"
-                        }).click(function() {
-                            scrapingState.config.deletedFields[previewData.fields[colIdx]] = true;
-                            saveCurrentConfig();
-                            $("#resetColumns").show();
-                            renderHandsontable();
-                        })
-                    );
-
-                    $headerInput.get(0).addEventListener("input", function() {
-                        scrapingState.config.headers[previewData.fields[colIdx]] = $headerInput.text();
-                        saveCurrentConfig();
-                    });
-
-                    headerCell.firstChild.style.display = "none";
-                    $(headerCell).append($headerContainer);
-                }
+                if (typeof width !== "number") return width;
+                return Math.min(MAX_COL_WIDTH, Math.max(width, headerWidths[colIdx] || 0));
             },
             beforeOnCellMouseDown: function(event, coords) {
                 if (coords.row < 0) {
@@ -485,6 +510,52 @@
                 }
             }
         });
+    }
+
+    /**
+     * Handles the rename and delete buttons of the column headers.
+     * @param {MouseEvent} event - Mouse event in the grid.
+     */
+    function onGridHeaderAction(event) {
+        const button = event.target instanceof Element ? event.target.closest("[data-col-action]") : null;
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type !== "click" || !scrapingState.gridFields) return;
+        const field = scrapingState.gridFields[parseInt(button.dataset.col, 10)];
+        if (field === undefined) return;
+        if (button.dataset.colAction === "rename") {
+            openColumnPrompt(field);
+        } else if (button.dataset.colAction === "delete") {
+            closeColumnPrompt();
+            scrapingState.config.deletedFields[field] = true;
+            saveCurrentConfig();
+            $("#resetColumns").show();
+            renderHandsontable();
+        }
+    }
+
+    /**
+     * Opens the column name box above the grid. Saving an empty name gives the column its
+     * original name back.
+     * @param {string} field - Original name of the column.
+     */
+    function openColumnPrompt(field) {
+        scrapingState.renamingField = field;
+        const input = document.getElementById("listColumnPromptInput");
+        input.value = applyHeaderRenames([field])[0];
+        input.placeholder = field;
+        document.getElementById("listColumnPrompt").hidden = false;
+        input.focus();
+        input.select();
+    }
+
+    /**
+     * Closes the column name box.
+     */
+    function closeColumnPrompt() {
+        scrapingState.renamingField = null;
+        document.getElementById("listColumnPrompt").hidden = true;
     }
 
     /**
@@ -656,6 +727,7 @@
             }
         }
 
+        closeColumnPrompt();
         scrapingState.tableId = tableData.tableId;
         scrapingState.scraping = false;
         scrapingState.failedToProcess = false;
@@ -786,7 +858,20 @@
     }
 
     /**
-     * Updates the scraping information values displayed in the #stats container.
+     * Formats a duration as mm:ss, or hh:mm:ss from one hour.
+     * @param {number} ms - Duration.
+     * @returns {string} Formatted duration.
+     */
+    function formatDuration(ms) {
+        const total = Math.floor(ms / 1000);
+        const pad = n => String(n).padStart(2, "0");
+        const hours = Math.floor(total / 3600);
+        const rest = pad(Math.floor(total / 60) % 60) + ":" + pad(total % 60);
+        return hours ? pad(hours) + ":" + rest : rest;
+    }
+
+    /**
+     * Updates the counters of the #stats tiles.
      * "Load more" counts rounds (clicks that brought rows) instead of pages.
      * Speed: rows added by crawling (beyond the first read) per minute of working time,
      * leaving out the rows whose round was not timed (see crawlWithLoadMore).
@@ -795,14 +880,15 @@
         const byRound = getMoreRowsMode() === "loadMore";
         const addedRows = scrapingState.data.length - scrapingState.firstRows - scrapingState.uncountedRows;
         const speed = addedRows > 0 && scrapingState.workingTime > 0
-            ? (addedRows * 60000 / scrapingState.workingTime).toFixed(1) + " rows / min" : "\u2013";
-        $("#stats")
-            .empty()
-            .append($("<div>", { text: byRound ? "Rounds: " + scrapingState.loadRounds : "Pages scraped: " + scrapingState.pages }))
-            .append($("<div>", { text: "Rows collected: " + scrapingState.data.length }))
-            .append($("<div>", { text: (byRound ? "Rows from last round: " : "Rows from last page: ") + scrapingState.lastRows }))
-            .append($("<div>", { text: "Working time: " + parseInt(scrapingState.workingTime / 1000) + "s" }))
-            .append($("<div>", { text: "Speed: " + speed }));
+            ? (addedRows * 60000 / scrapingState.workingTime).toFixed(1) + " / min" : "–";
+        $("#listPages").text(byRound ? scrapingState.loadRounds : scrapingState.pages);
+        $("#listPagesLabel").text(byRound ? "rounds" : "pages");
+        $("#listRows").text(scrapingState.data.length);
+        $("#listLastRows").text(scrapingState.lastRows);
+        $("#listLastRowsLabel").text(byRound ? "from last round" : "from last page");
+        $("#listDuration").text(formatDuration(scrapingState.workingTime));
+        $("#listSpeed").text(speed);
+        $("#listRowCount").text(scrapingState.data.length + (scrapingState.data.length === 1 ? " row" : " rows"));
     }
 
     /**
@@ -917,6 +1003,31 @@
             saveCurrentConfig();
         });
 
+        // Rename and delete buttons of the column headers: caught before the grid selects the column
+        ["mousedown", "click"].forEach(type => $("#hot").get(0).addEventListener(type, onGridHeaderAction, true));
+
+        $("#listColumnPrompt").on("submit", function(event) {
+            event.preventDefault();
+            const field = scrapingState.renamingField;
+            const name = $("#listColumnPromptInput").val().trim();
+            closeColumnPrompt();
+            if (field === null || field === undefined || !scrapingState.config) return;
+            if (name && name !== field) {
+                scrapingState.config.headers[field] = name;
+            } else {
+                delete scrapingState.config.headers[field];
+            }
+            saveCurrentConfig();
+            renderHandsontable();
+        });
+        $("#listColumnPromptCancel").click(closeColumnPrompt);
+        $("#listColumnPromptInput").on("keydown", function(event) {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeColumnPrompt();
+            }
+        });
+
         $("#resetColumns").click(function() {
             scrapingState.config.deletedFields = {};
             saveCurrentConfig();
@@ -962,9 +1073,8 @@
             if (scrapingState.data) renderHandsontable();
         });
 
-        // Controls and messages shown or hidden above the table move it down or up after
-        // it was drawn: draw it again to fit the window. The columns above it are floated,
-        // so each is watched (their container keeps no height of its own).
+        // Controls, messages and the column name box shown or hidden above the table move it
+        // down or up after it was drawn: draw it again to fit the window.
         const tableMoveObserver = new ResizeObserver(function() {
             if (!scrapingState.data || !$("#content").is(":visible")) return;
             if ($("#hot").get(0).getBoundingClientRect().y !== scrapingState.tableTop) renderHandsontable();
