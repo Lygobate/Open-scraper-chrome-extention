@@ -74,6 +74,8 @@
         picking: false,
         pickToken: 0,
         picks: [],
+        pickTemplateId: "",
+
         emptyCounts: null,
         gridSize: null,
         gridFitTimer: 0,
@@ -999,15 +1001,7 @@
      */
     async function createTemplateFromPicks(picks) {
         const domain = getTestDomain();
-        const seen = {};
-        const fields = picks.filter(pick => pick && KIND_LABELS[pick.kind] && Array.isArray(pick.selectors) && pick.selectors.length)
-            .map((pick, index) => {
-                const base = String(pick.name || "").trim() || KIND_LABELS[pick.kind];
-                let name = base;
-                for (let n = 2; seen[name]; n++) name = base + " (" + n + ")";
-                seen[name] = true;
-                return { id: "f" + (index + 1), name: name, kind: pick.kind, selectors: pick.selectors.slice(0, 3).map(String) };
-            });
+        const fields = picksToFields(picks, [], [state.urlColumnName || "URL"]).slice(0, MAX_TEMPLATE_FIELDS);
         if (!fields.length) {
             showMessage("detailsPickMessage", "Nothing was selected.", "warning");
             return;
@@ -1027,6 +1021,63 @@
         if (!(await updateTemplates(templates => { templates.push(template); }))) return;
         showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
         selectTemplate(template.id);
+    }
+
+    /**
+     * Turns picks into template fields: kinds checked, at most 3 selectors, column names made
+     * unique (among themselves and the given names), ids not used yet.
+     * @param {Array<Object>} picks - Picked fields.
+     * @param {Object[]} [existing=[]] - Fields already in the template.
+     * @param {string[]} [usedNames=[]] - Column names already taken.
+     * @returns {Object[]} New fields.
+     */
+    function picksToFields(picks, existing, usedNames) {
+        const seen = {};
+        (usedNames || []).forEach(name => { seen[name] = true; });
+        const usedIds = new Set((existing || []).map(field => field.id));
+        const known = new Set((existing || []).map(field => field.kind + "\n" + field.selectors[0]));
+        let next = 1;
+        return picks.filter(pick => pick && KIND_LABELS[pick.kind] && Array.isArray(pick.selectors) && pick.selectors.length)
+            .filter(pick => {
+                const key = pick.kind + "\n" + pick.selectors[0];
+                if (known.has(key)) return false;
+                known.add(key);
+                return true;
+            })
+            .map(pick => {
+                const base = String(pick.name || "").trim() || KIND_LABELS[pick.kind];
+                let name = base;
+                for (let n = 2; seen[name]; n++) name = base + " (" + n + ")";
+                seen[name] = true;
+                while (usedIds.has("f" + next)) next++;
+                const id = "f" + next;
+                usedIds.add(id);
+                return { id: id, name: name, kind: pick.kind, selectors: pick.selectors.slice(0, 3).map(String) };
+            });
+    }
+
+    /**
+     * Adds picked fields to an existing template (same id and name); fields it already has
+     * are not added twice.
+     * @param {string} templateId - Template id.
+     * @param {Array<Object>} picks - Picked fields.
+     */
+    async function addFieldsToTemplate(templateId, picks) {
+        let added = 0;
+        let name = "";
+        const saved = await updateTemplate(templateId, template => {
+            const fields = picksToFields(picks, template.fields, getResultColumns(template))
+                .slice(0, Math.max(0, MAX_TEMPLATE_FIELDS - template.fields.length));
+            template.fields = template.fields.concat(fields);
+            added = fields.length;
+            name = template.name;
+        });
+        if (!saved) {
+            showMessage("detailsPickMessage", "The template was deleted meanwhile: nothing was added.", "warning");
+        } else {
+            showMessage("detailsPickMessage", added ? plural(added, "field") + " added to \"" + name + "\"." :
+                "No new field: what you selected is already in the template.", added ? "info" : "warning");
+        }
     }
 
     /**
@@ -1210,6 +1261,8 @@
         $id("detailsPickStart").hidden = state.picking;
         $id("detailsPickStart").disabled = busy || !getTestUrl();
         $id("detailsPickStart").classList.toggle("osd-btn-primary", !getSelectedTemplate());
+        $id("detailsEditFields").hidden = !getSelectedTemplate();
+        $id("detailsEditFields").disabled = busy || !getTestUrl();
         $id("detailsPickStop").hidden = !state.picking;
         $id("detailsBackTo1").disabled = busy;
         $id("detailsToStep3").disabled = busy || !getSelectedTemplate();
@@ -1406,9 +1459,13 @@
 
     /**
      * Opens the test page if needed, brings it to the front and turns on the picker there.
+     * @param {"new"|"edit"} [mode="new"] - "new" makes a new template of the picks; "edit"
+     *     shows the selected template's fields as selected and adds the picks to it.
      */
-    async function startPicking() {
+    async function startPicking(mode) {
         if (isBusy()) return;
+        const editing = mode === "edit" ? getSelectedTemplate() : null;
+        if (mode === "edit" && !editing) return;
         if (isListCrawlRunning()) {
             showMessage("detailsPickMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
             return;
@@ -1417,6 +1474,7 @@
         state.previewToken++;
         state.picking = true;
         state.picks = [];
+        state.pickTemplateId = editing ? editing.id : "";
         closeTemplateMenu();
         closePrompt("detailsTemplatePrompt");
         updateBusyUi();
@@ -1429,14 +1487,17 @@
             return;
         }
         await focusTargetTab();
-        const started = await sendToTabWithRetry({ action: "detailsPickerStart" }, ANSWER_TIMEOUT_MS);
+        const startMessage = { action: "detailsPickerStart" };
+        if (editing) startMessage.existing = editing.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
+        const started = await sendToTabWithRetry(startMessage, ANSWER_TIMEOUT_MS);
         if (token !== state.pickToken) return;
         if (!started || !started.ok) {
             endPicking(token, "The page does not answer. Reload it, or open a regular web page, then try again.", "error");
             return;
         }
         connectSessionPort(started.doc);
-        showMessage("detailsPickMessage", "Click the data to extract in the page, then click Finish.");
+        showMessage("detailsPickMessage", editing ? "Fields of \"" + editing.name + "\" found in the page are green. Click more data to add, then click Finish." :
+            "Click the data to extract in the page, then click Finish.");
         pollPicks(token);
     }
 
@@ -1488,10 +1549,19 @@
         state.pickToken++;
         state.picking = false;
         const picks = state.picks;
+        const editedId = state.pickTemplateId;
         state.picks = [];
+        state.pickTemplateId = "";
         showMessage("detailsPickMessage", message, level);
         updateBusyUi();
-        if (picks.length) {
+        if (editedId) {
+            if (picks.length) {
+                addFieldsToTemplate(editedId, picks).then(() => refreshPreview());
+            } else {
+                if (!message) showMessage("detailsPickMessage", "No field added.");
+                refreshPreview();
+            }
+        } else if (picks.length) {
             createTemplateFromPicks(picks);
         } else if (!message) {
             showMessage("detailsPickMessage", "Nothing was selected.", "warning");
@@ -2061,7 +2131,8 @@
     $id("detailsTemplateFile").addEventListener("change", event => importTemplate(event.target.files[0]));
     $id("detailsTemplatePromptCancel").addEventListener("click", () => closePrompt("detailsTemplatePrompt"));
     $id("detailsColumnPromptCancel").addEventListener("click", () => closePrompt("detailsColumnPrompt"));
-    $id("detailsPickStart").addEventListener("click", startPicking);
+    $id("detailsPickStart").addEventListener("click", () => startPicking("new"));
+    $id("detailsEditFields").addEventListener("click", () => startPicking("edit"));
     $id("detailsPickStop").addEventListener("click", finishPicking);
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
     $id("detailsToStep3").addEventListener("click", () => showStep(3));

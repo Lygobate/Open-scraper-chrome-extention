@@ -1752,10 +1752,29 @@
     }
 
     /**
+     * Shows the fields a template already has as selected (green) when they are found in the
+     * page, and keeps them from being added again.
+     * @param {Array<{kind: string, selectors: string[]}>} [fields] - Fields of the template.
+     */
+    function markExistingFields(fields) {
+        (Array.isArray(fields) ? fields : []).forEach(function(field) {
+            var element = resolveField(field).element;
+            if (!element) return;
+            var kinds = fieldPicker.pickedKinds.get(element) || [];
+            if (kinds.indexOf(field.kind) === -1) kinds.push(field.kind);
+            fieldPicker.pickedKinds.set(element, kinds);
+            if (!layerBoxes.some(function(entry) { return entry.kind === "picked" && entry.element === element; })) {
+                addLayerBox(element, "picked", field);
+            }
+        });
+    }
+
+    /**
      * Turns on the field picker: light dim, crosshair overlay catching the mouse (the page gets
      * no click or hover), hover box with its info label, and the picker panel.
+     * @param {Array<Object>} [existing] - Fields of the template being edited (see markExistingFields).
      */
-    function startFieldPicker() {
+    function startFieldPicker(existing) {
         if (fieldPicker) return;
         clearLayerBoxes("found");
         clearLayerBoxes("picked");
@@ -1777,6 +1796,7 @@
             pickedKinds: new Map(),
             port: null
         };
+        markExistingFields(existing);
         onLayerEvent(parts.catcher, "mousemove", onPickerPointerMove);
         onLayerEvent(parts.catcher, "click", onPickerClick);
         window.addEventListener("keydown", onPickerKeyDown, true);
@@ -1958,7 +1978,7 @@
             case "detailsPickerStart":
                 clearLayerBoxes("found");
                 setBusyOverlay(false);
-                startFieldPicker();
+                startFieldPicker(message.existing);
                 sendResponse({ ok: true, url: window.location.href, doc: DOCUMENT_TOKEN });
                 break;
             case "detailsPickerPoll":
