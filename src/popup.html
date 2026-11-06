@@ -98,19 +98,28 @@
         </div>
     </div>
     <div id="detailsPanel" class="details-panel" role="tabpanel" aria-labelledby="tabDetails">
-        <section class="osd-step" aria-labelledby="detailsUrlsTitle">
-            <h2 class="osd-step-title" id="detailsUrlsTitle"><span class="osd-step-num">1</span> Pages to visit</h2>
+        <ol class="osd-stepper" aria-label="Steps">
+            <li><button type="button" class="osd-stepper-item" id="detailsStepNav1" data-step="1"><span class="osd-step-num">1</span>Pages</button></li>
+            <li><button type="button" class="osd-stepper-item" id="detailsStepNav2" data-step="2"><span class="osd-step-num">2</span>Fields</button></li>
+            <li><button type="button" class="osd-stepper-item" id="detailsStepNav3" data-step="3"><span class="osd-step-num">3</span>Extract</button></li>
+        </ol>
+
+        <section class="osd-step" id="detailsStep1" aria-labelledby="detailsStep1Title">
+            <h2 class="osd-step-title" id="detailsStep1Title">Pages to visit</h2>
             <div class="osd-segmented" role="group" aria-label="Where the page URLs come from">
-                <button type="button" class="osd-seg is-active" id="detailsSourceList" data-source="list" aria-pressed="true">List results</button>
                 <button type="button" class="osd-seg" id="detailsSourceCsv" data-source="csv" aria-pressed="false">CSV file</button>
+                <button type="button" class="osd-seg" id="detailsSourceList" data-source="list" aria-pressed="false" hidden>List results</button>
                 <button type="button" class="osd-seg" id="detailsSourcePaste" data-source="paste" aria-pressed="false">Paste URLs</button>
             </div>
-            <div class="osd-source-pane" id="detailsSourceListPane">
-                <p class="osd-hint">Uses a link column of the rows extracted in the "Extract list" tab.</p>
+            <div class="osd-source-pane" id="detailsSourceCsvPane">
+                <label class="osd-file-drop">
+                    <input type="file" id="detailsCsvFile" accept=".csv,text/csv">
+                    <span class="osd-file-drop-text" id="detailsCsvName">Choose a CSV file</span>
+                </label>
+                <p class="osd-hint">The first row holds the column names. The file is read on this computer only.</p>
             </div>
-            <div class="osd-source-pane" id="detailsSourceCsvPane" hidden>
-                <input type="file" id="detailsCsvFile" accept=".csv,text/csv" class="osd-file">
-                <p class="osd-hint">The first row of the file must contain the column names. The file is read on this computer only.</p>
+            <div class="osd-source-pane" id="detailsSourceListPane" hidden>
+                <p class="osd-hint">Rows extracted in the "Extract list" tab.</p>
             </div>
             <div class="osd-source-pane" id="detailsSourcePastePane" hidden>
                 <textarea id="detailsPasteUrls" class="osd-textarea" rows="4" spellcheck="false" placeholder="One URL per line"></textarea>
@@ -121,64 +130,101 @@
                 <span id="detailsUrlCount" class="osd-count"></span>
             </div>
             <div class="osd-message osd-message-warning" id="detailsUrlMessage" role="status" hidden></div>
+            <ol class="osd-url-list" id="detailsUrlList" aria-label="Values of the URL column" hidden></ol>
+            <div class="osd-actions">
+                <span class="osd-grow"></span>
+                <button type="button" class="osd-btn osd-btn-primary osd-btn-lg" id="detailsToStep2" disabled>Continue</button>
+            </div>
         </section>
 
-        <section class="osd-step" aria-labelledby="detailsFieldsTitle">
-            <h2 class="osd-step-title" id="detailsFieldsTitle"><span class="osd-step-num">2</span> Fields to extract</h2>
+        <section class="osd-step" id="detailsStep2" aria-labelledby="detailsStep2Title" hidden>
+            <h2 class="osd-step-title" id="detailsStep2Title">Fields to extract</h2>
             <div class="osd-row">
-                <label for="detailsSampleUrl" class="osd-label">Sample page</label>
-                <button type="button" class="osd-btn osd-btn-icon" id="detailsSamplePrev" aria-label="Previous URL" title="Previous URL">&lsaquo;</button>
-                <input type="text" id="detailsSampleUrl" class="osd-input osd-grow" readonly>
-                <button type="button" class="osd-btn osd-btn-icon" id="detailsSampleNext" aria-label="Next URL" title="Next URL">&rsaquo;</button>
+                <label for="detailsTestUrl" class="osd-label osd-label-fixed">Test page</label>
+                <button type="button" class="osd-btn osd-btn-icon" id="detailsTestPrev" aria-label="Previous URL" title="Previous URL">&lsaquo;</button>
+                <input type="text" id="detailsTestUrl" class="osd-input osd-grow" readonly>
+                <button type="button" class="osd-btn osd-btn-icon" id="detailsTestNext" aria-label="Next URL" title="Next URL">&rsaquo;</button>
             </div>
             <div class="osd-row">
-                <button type="button" class="osd-btn osd-btn-primary" id="detailsPickStart">Pick fields in the page</button>
-                <button type="button" class="osd-btn osd-btn-primary" id="detailsPickStop" hidden>Finish picking</button>
-                <span class="osd-grow"></span>
-                <button type="button" class="osd-btn" id="detailsSaveFields">Save fields for this site</button>
+                <label for="detailsTemplate" class="osd-label osd-label-fixed">Template</label>
+                <select id="detailsTemplate" class="osd-select osd-grow"></select>
+                <div class="osd-menu-wrap">
+                    <button type="button" class="osd-btn osd-btn-icon" id="detailsTemplateMenuButton" aria-haspopup="menu" aria-expanded="false" aria-controls="detailsTemplateMenu" aria-label="Template actions" title="Template actions">&#8943;</button>
+                    <div class="osd-menu" id="detailsTemplateMenu" role="menu" hidden>
+                        <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateRename">Rename</button>
+                        <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateExport">Export as JSON</button>
+                        <button type="button" role="menuitem" class="osd-menu-item" id="detailsTemplateImport">Import from JSON</button>
+                        <button type="button" role="menuitem" class="osd-menu-item osd-menu-danger" id="detailsTemplateDelete">Delete</button>
+                    </div>
+                </div>
+                <input type="file" id="detailsTemplateFile" accept=".json,application/json" hidden>
             </div>
-            <div class="osd-saved" id="detailsSavedBar" hidden>
-                <span class="osd-saved-text" id="detailsSavedText"></span>
-                <button type="button" class="osd-btn osd-btn-primary" id="detailsUseSaved">Use</button>
-                <button type="button" class="osd-btn" id="detailsDeleteSaved">Delete</button>
-            </div>
+            <form class="osd-prompt" id="detailsTemplatePrompt" hidden>
+                <label class="osd-prompt-label" for="detailsTemplatePromptInput" id="detailsTemplatePromptLabel"></label>
+                <input type="text" id="detailsTemplatePromptInput" class="osd-input osd-grow" maxlength="120">
+                <button type="submit" class="osd-btn osd-btn-primary" id="detailsTemplatePromptOk">Save</button>
+                <button type="button" class="osd-btn" id="detailsTemplatePromptCancel">Cancel</button>
+            </form>
+            <button type="button" class="osd-btn osd-btn-primary osd-btn-lg osd-btn-block" id="detailsPickStart">Select data to extract</button>
+            <button type="button" class="osd-btn osd-btn-lg osd-btn-block" id="detailsPickStop" hidden>Finish selecting</button>
             <div class="osd-message" id="detailsPickMessage" role="status" hidden></div>
-            <ul class="osd-field-list" id="detailsFieldList" aria-label="Fields"></ul>
-            <p class="osd-hint" id="detailsNoFields">No field yet. Click "Pick fields in the page", then click the data you want in the page: each element gives its text, its link and its image.</p>
-        </section>
-
-        <section class="osd-step" aria-labelledby="detailsRunTitle">
-            <h2 class="osd-step-title" id="detailsRunTitle"><span class="osd-step-num">3</span> Extract</h2>
-            <div class="osd-row">
-                <span class="osd-label">Wait per page</span>
-                <label class="osd-inline-input">min <input type="number" id="detailsMinDelay" class="osd-input osd-number" min="0" step="1" value="2"></label>
-                <label class="osd-inline-input">max <input type="number" id="detailsMaxDelay" class="osd-input osd-number" min="0" step="1" value="5"></label>
-                <span class="osd-hint osd-hint-inline">sec</span>
+            <div class="osd-preview" id="detailsPreview" hidden>
+                <div class="osd-preview-head">
+                    <span>Preview of the test page</span>
+                    <span class="osd-count" id="detailsPreviewStatus"></span>
+                </div>
+                <table class="osd-preview-table">
+                    <tbody id="detailsPreviewBody"></tbody>
+                </table>
+            </div>
+            <div class="osd-actions">
+                <button type="button" class="osd-btn osd-btn-lg" id="detailsBackTo1">Back</button>
                 <span class="osd-grow"></span>
-                <button type="button" class="osd-btn osd-btn-primary" id="detailsStart">Start</button>
-                <button type="button" class="osd-btn osd-btn-danger" id="detailsStop" hidden>Stop</button>
+                <button type="button" class="osd-btn osd-btn-primary osd-btn-lg" id="detailsToStep3" disabled>Continue</button>
             </div>
-            <p class="osd-hint">Each page is read once loaded and after the min wait at least: raise the min wait for pages that show their content late.</p>
-            <div class="osd-progress" id="detailsProgress" hidden>
-                <div class="osd-progress-track"><div class="osd-progress-bar" id="detailsProgressBar"></div></div>
-                <div class="osd-progress-text" id="detailsProgressText" role="status"></div>
-                <div class="osd-progress-url" id="detailsProgressUrl"></div>
-            </div>
-            <div class="osd-message osd-message-warning" id="detailsRunMessage" role="status" hidden></div>
         </section>
 
-        <section class="osd-step" aria-labelledby="detailsResultsTitle">
+        <section class="osd-step" id="detailsStep3" aria-labelledby="detailsRunName" hidden>
+            <div class="osd-run-head">
+                <div class="osd-run-title">
+                    <h2 class="osd-run-name" id="detailsRunName"></h2>
+                    <span class="osd-run-domain" id="detailsRunDomain"></span>
+                </div>
+                <span class="osd-grow"></span>
+                <button type="button" class="osd-btn" id="detailsShowTab">Show page</button>
+            </div>
+            <div class="osd-counters">
+                <div class="osd-counter"><span class="osd-counter-value" id="detailsExtracted">0</span><span class="osd-counter-label">extracted</span></div>
+                <div class="osd-counter"><span class="osd-counter-value" id="detailsRemaining">0</span><span class="osd-counter-label">remaining</span></div>
+                <div class="osd-counter"><span class="osd-counter-value" id="detailsDuration">00:00</span><span class="osd-counter-label">duration</span></div>
+            </div>
+            <details class="osd-options" id="detailsOptions">
+                <summary>Options</summary>
+                <div class="osd-row">
+                    <span class="osd-label">Page load wait</span>
+                    <label class="osd-inline-input">Min <input type="number" id="detailsMinWait" class="osd-input osd-number" min="0" step="1" value="2"></label>
+                    <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="1" value="30"></label>
+                    <span class="osd-hint osd-hint-inline">seconds</span>
+                </div>
+                <p class="osd-hint">Each page is read as soon as it has loaded, but not before Min seconds: raise Min for pages that show their content late. Max is the longest wait for a page to load. Saved in the template.</p>
+            </details>
+            <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
+            <div class="osd-message" id="detailsRunMessage" role="status" hidden></div>
             <div class="osd-row osd-results-head">
-                <h2 class="osd-step-title" id="detailsResultsTitle"><span class="osd-step-num">4</span> Results</h2>
                 <span class="osd-count" id="detailsResultCount"></span>
                 <span class="osd-grow"></span>
+                <button type="button" class="osd-btn osd-btn-success" id="detailsCopy"><span class="glyphicon glyphicon-copy"></span> Copy</button>
                 <button type="button" class="osd-btn osd-btn-success" id="detailsCsv"><span class="glyphicon glyphicon-download-alt"></span> CSV</button>
                 <button type="button" class="osd-btn osd-btn-success" id="detailsXlsx"><span class="glyphicon glyphicon-download-alt"></span> XLSX</button>
-                <button type="button" class="osd-btn osd-btn-success" id="detailsCopy"><span class="glyphicon glyphicon-copy"></span> Copy</button>
             </div>
+            <form class="osd-prompt" id="detailsColumnPrompt" hidden>
+                <label class="osd-prompt-label" for="detailsColumnPromptInput" id="detailsColumnPromptLabel">Column name</label>
+                <input type="text" id="detailsColumnPromptInput" class="osd-input osd-grow" maxlength="120">
+                <button type="submit" class="osd-btn osd-btn-primary">Save</button>
+                <button type="button" class="osd-btn" id="detailsColumnPromptCancel">Cancel</button>
+            </form>
             <div class="osd-message" id="detailsExportMessage" role="status" hidden></div>
-            <p class="osd-hint" id="detailsNoResults">One row per visited page appears here, with the page URL first. Results stay in this window only.</p>
-            <div id="detailsHot" class="osd-hot" hidden></div>
+            <div id="detailsHot" class="osd-hot"></div>
         </section>
     </div>
 

@@ -9,52 +9,82 @@
     // Elements of the list panel, kept in the layout but made inert while hidden
     const LIST_PANEL_IDS = ["wait", "content"];
 
-    // Longest wait for a page to finish loading, then for the content script to answer
-    const LOAD_TIMEOUT_MS = 30000;
+    // Longest wait for the test page to load, and for the page to answer a command
+    const TEST_PAGE_TIMEOUT_MS = 30000;
     const ANSWER_TIMEOUT_MS = 10000;
-    const RETRY_INTERVAL_MS = 500;
+    // Interval between two checks of a page being loaded
+    const READY_POLL_MS = 100;
+    // Longest wait for a field of the template to show in the test page before the preview
+    const PREVIEW_WAIT_MS = 2000;
+    // How long "show in page" highlights a field
+    const SHOW_FIELD_MS = 1000;
 
-    // Name of the port that keeps the page picker alive while this window is open
-    const PICKER_PORT_NAME = "openscraper-details-picker";
+    // Port kept open with the page while this window uses it: the page cleans up when it closes
+    const DETAILS_PORT_NAME = "openscraper-details-session";
 
     // Extensions of image files: such URLs are not pages to visit
     const IMAGE_URL_PATTERN = /\.(jpe?g|gif|png|bmp|webp|svg|avif|ico)$/i;
 
     const KIND_LABELS = { text: "Text", link: "Link", image: "Image" };
 
-    // Rows drawn in the results grid (exports always contain every row)
-    const PREVIEW_LIMIT = 1000;
+    // Values of the URL column listed in step 1 (the count of the others is shown)
+    const URL_LIST_LIMIT = 1000;
 
-    // chrome.storage.local key of the saved field sets, by hostname
-    const FIELD_SETS_KEY = "pageDetailsFieldSets";
+    // chrome.storage.local keys: templates, and the field sets saved by earlier builds
+    const TEMPLATES_KEY = "pageDetailsTemplates";
+    const LEGACY_FIELD_SETS_KEY = "pageDetailsFieldSets";
+    const TEMPLATE_FORMAT = "open-scraper-page-details-template";
+    const TEMPLATE_VERSION = 1;
+    const DEFAULT_WAIT = { min: 2, max: 30 };
+    const MAX_TEMPLATE_FIELDS = 200;
+
+    // Labels that make a three-part registrable domain under a country code (example.co.uk)
+    const SECOND_LEVEL_LABELS = new Set(["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gob", "nic", "ltd", "plc", "sch", "mil", "nom", "gouv", "asso"]);
 
     // Target tab, as given by background.js in the window URL
     const targetTabId = parseInt(new URLSearchParams(window.location.search).get("tabid"), 10);
 
-    // In-memory state of the panel; nothing here is persisted except saved field sets
+    // In-memory state of the panel; only templates are persisted
     const state = {
-        source: "list",
+        step: 1,
+        source: "",
+        sourceChosen: false,
         sourceTables: { list: null, csv: null, paste: null },
+        csvFileName: "",
         columnIndex: -1,
         urls: [],
-        sampleUrls: [],
-        sampleIndex: 0,
-        currentPageUrl: "",
-        fields: [],
-        nextFieldId: 1,
+        validUrls: [],
+        urlColumnName: "URL",
+        testIndex: 0,
+        testChosen: false,
+        templates: [],
+        templateId: "",
+        previewToken: 0,
         picking: false,
         pickToken: 0,
-        pickerPort: null,
+        picks: [],
         results: [],
         nextIndex: 0,
+        extracted: 0,
+        failed: 0,
         running: false,
-        runToken: 0,
+        runId: 0,
         resolveStop: null,
-        grid: null
+        elapsedMs: 0,
+        runStartedAt: 0,
+        ticker: 0,
+        grid: null,
+        gridData: [],
+        gridKey: "",
+        port: null,
+        promptAction: null,
+        columnPromptAction: null,
+        waitSaveTimer: 0
     };
 
     const $id = id => document.getElementById(id);
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const plural = (count, word) => count + " " + word + (count === 1 ? "" : "s");
 
     // --- Messages ---
 
@@ -72,7 +102,7 @@
         el.classList.toggle("osd-message-error", level === "error");
     }
 
-    // --- Tabs ---
+    // --- Tabs and steps ---
 
     /**
      * Shows one of the two extraction modes. The list panel is never hidden with display:none,
@@ -111,21 +141,68 @@
      * Refreshes what depends on the list tab each time the details panel is shown.
      */
     function onDetailsShown() {
-        if (state.source === "list" && !state.running) loadListSource();
-        renderResultsGrid();
+        if (!isBusy()) refreshListSource();
+        showStep(state.step);
     }
 
-    // --- URL sources ---
+    /**
+     * Tells whether a step can be opened now.
+     * @param {number} step - Step number.
+     * @returns {boolean} True when allowed.
+     */
+    function canOpenStep(step) {
+        if (isBusy()) return step === state.step;
+        if (step === 1) return true;
+        if (step === 2) return state.validUrls.length > 0;
+        return state.validUrls.length > 0 && !!getSelectedTemplate();
+    }
 
     /**
-     * Tells whether a value is a page address worth visiting: starts with http and is not an image.
+     * Shows one step of the wizard and hides the others.
+     * @param {number} step - Step number (1 Pages, 2 Fields, 3 Extract).
+     */
+    function showStep(step) {
+        if (isBusy()) step = state.step;
+        while (step > 1 && !canOpenStep(step)) step--;
+        const leaving = state.step;
+        state.step = step;
+        [1, 2, 3].forEach(n => { $id("detailsStep" + n).hidden = n !== step; });
+        if (leaving === 2 && step !== 2) {
+            state.previewToken++;
+            closeTemplateMenu();
+            sendToTab({ action: "detailsClearHighlights" });
+        }
+        updateStepper();
+        if (step === 2) onFieldsStepShown();
+        if (step === 3) onExtractStepShown();
+    }
+
+    /**
+     * Updates the step indicator: active, done and reachable steps.
+     */
+    function updateStepper() {
+        [1, 2, 3].forEach(n => {
+            const item = $id("detailsStepNav" + n);
+            item.classList.toggle("is-active", n === state.step);
+            item.classList.toggle("is-done", n < state.step);
+            item.disabled = n !== state.step && !canOpenStep(n);
+            if (n === state.step) item.setAttribute("aria-current", "step");
+            else item.removeAttribute("aria-current");
+        });
+    }
+
+    // --- Step 1: URL sources ---
+
+    /**
+     * Tells whether a value is a page address worth visiting: starts with http(s) and is not an
+     * image (query and fragment excluded from the check).
      * @param {*} value - Cell value.
      * @returns {boolean} True for a usable URL.
      */
     function isUsableUrl(value) {
         if (typeof value !== "string") return false;
         const url = value.trim();
-        if (!/^https?:\/\//i.test(url)) return false;
+        if (!/^https?:\/\/[^\s]/i.test(url)) return false;
         return !IMAGE_URL_PATTERN.test(url.split(/[?#]/)[0]);
     }
 
@@ -146,12 +223,13 @@
     }
 
     /**
-     * Returns, for each column, the share of non-empty values that are usable URLs.
+     * Returns the indexes of the columns where more than half of the non-empty values are usable URLs.
      * @param {{fields: string[], rows: Array<Array<*>>}} table - Source table.
-     * @returns {number[]} Ratios between 0 and 1.
+     * @returns {number[]} Column indexes, in table order.
      */
-    function getUrlRatios(table) {
-        return table.fields.map((_, col) => {
+    function getUrlColumns(table) {
+        const columns = [];
+        table.fields.forEach((_, col) => {
             let filled = 0;
             let usable = 0;
             table.rows.forEach(row => {
@@ -160,25 +238,41 @@
                 filled++;
                 if (isUsableUrl(String(value))) usable++;
             });
-            return filled ? usable / filled : 0;
+            if (filled && usable / filled > 0.5) columns.push(col);
         });
+        return columns;
     }
 
     /**
-     * Reads the list tab results as a URL source.
+     * Reads the list tab results, or null when there are none.
+     * @returns {{fields: string[], rows: Array<Array<*>>}|null} Table.
      */
-    function loadListSource() {
+    function readListTable() {
         let listTable = null;
         try {
             listTable = window.OpenScraper && window.OpenScraper.getListResults();
         } catch (error) {
             console.error("Unable to read the list results:", error);
         }
-        state.sourceTables.list = listTable && listTable.fields.length ? {
+        return listTable && listTable.fields.length ? {
             fields: uniqueColumnNames(listTable.fields),
             rows: listTable.data.map(row => row.map(cell => (Array.isArray(cell) ? cell.join(", ") : cell)))
         } : null;
-        applySource();
+    }
+
+    /**
+     * Reads the list results again: the "List results" source is only offered when they have
+     * a URL column.
+     */
+    function refreshListSource() {
+        const table = readListTable();
+        state.sourceTables.list = table && getUrlColumns(table).length ? table : null;
+        $id("detailsSourceList").hidden = !state.sourceTables.list;
+        if (!state.sourceChosen || (state.source === "list" && !state.sourceTables.list)) {
+            setSource(state.sourceTables.list ? "list" : "csv");
+        } else if (state.source === "list") {
+            applySource();
+        }
     }
 
     /**
@@ -203,6 +297,8 @@
      */
     async function loadCsvSource(file) {
         if (!file) return;
+        state.csvFileName = file.name;
+        $id("detailsCsvName").textContent = file.name;
         try {
             const text = decodeCsvBuffer(await file.arrayBuffer()).replace(/^﻿/, "");
             const parsed = Papa.parse(text, { skipEmptyLines: true });
@@ -231,10 +327,11 @@
     }
 
     /**
-     * Selects the source type (list results, CSV file or pasted URLs).
-     * @param {"list"|"csv"|"paste"} source - Source type.
+     * Selects the source type (CSV file, list results or pasted URLs).
+     * @param {"csv"|"list"|"paste"} source - Source type.
      */
     function setSource(source) {
+        if (source === "list" && !state.sourceTables.list) source = "csv";
         state.source = source;
         state.columnIndex = -1;
         document.querySelectorAll(".osd-seg[data-source]").forEach(button => {
@@ -242,110 +339,111 @@
             button.classList.toggle("is-active", active);
             button.setAttribute("aria-pressed", String(active));
         });
-        $id("detailsSourceListPane").hidden = source !== "list";
         $id("detailsSourceCsvPane").hidden = source !== "csv";
+        $id("detailsSourceListPane").hidden = source !== "list";
         $id("detailsSourcePastePane").hidden = source !== "paste";
-        if (source === "list") {
-            loadListSource();
-        } else {
-            applySource();
-        }
+        applySource();
     }
 
     /**
-     * Fills the column drop-down for the current source and preselects the best URL column.
-     * @param {string} [problem] - Message to show instead of the usual hints.
+     * Fills the column drop-down with the URL columns of the current source and selects the
+     * first one (or keeps the current choice).
+     * @param {string} [problem] - Error to show instead of the usual hints.
      */
     function applySource(problem) {
         const table = state.sourceTables[state.source];
         const select = $id("detailsUrlColumn");
         select.innerHTML = "";
+        const columns = table ? getUrlColumns(table) : [];
 
-        if (!table) {
+        if (!table || !columns.length) {
             $id("detailsColumnRow").hidden = true;
-            const hint = {
-                list: 'No list results yet: extract a list in the "Extract list" tab first, or use another source. ' +
-                    "After a run, the tab shows the last visited page: open the list page again, then click the extension icon.",
-                csv: "",
-                paste: ""
-            }[state.source];
-            showMessage("detailsUrlMessage", problem || hint, problem ? "error" : "warning");
-            setUrls([]);
+            let message = problem || "";
+            if (!message && table) message = "No column of this source contains URLs (addresses starting with http:// or https://).";
+            showMessage("detailsUrlMessage", message, "error");
+            setUrls([], "URL");
             return;
         }
 
-        const ratios = getUrlRatios(table);
-        let best = -1;
-        ratios.forEach((ratio, index) => {
-            if (ratio > 0.5 && (best === -1 || ratio > ratios[best])) best = index;
-        });
-
-        // Without a column of mostly URLs, the column with the most URLs is preselected
-        let most = 0;
-        ratios.forEach((ratio, index) => {
-            if (ratio > ratios[most]) most = index;
-        });
-
-        table.fields.forEach((name, index) => {
+        columns.forEach(index => {
             const option = document.createElement("option");
             option.value = String(index);
-            option.textContent = ratios[index] > 0.5 ? name : name + (ratios[index] > 0 ? " (few URLs)" : " (no URLs)");
+            option.textContent = table.fields[index];
             select.appendChild(option);
         });
         $id("detailsColumnRow").hidden = false;
-
-        const keep = state.columnIndex >= 0 && state.columnIndex < table.fields.length &&
-            ratios[state.columnIndex] > 0.5 ? state.columnIndex : best;
-        select.value = String(keep >= 0 ? keep : most);
-        applyColumn(ratios[most] > 0 ? "" : "No column of this source contains URLs.");
+        select.value = String(columns.indexOf(state.columnIndex) !== -1 ? state.columnIndex : columns[0]);
+        applyColumn();
     }
 
     /**
      * Uses the column chosen in the drop-down as the list of URLs to visit.
-     * @param {string} [problem] - Message to show.
      */
-    function applyColumn(problem) {
+    function applyColumn() {
         const table = state.sourceTables[state.source];
         if (!table) return;
         const index = parseInt($id("detailsUrlColumn").value, 10);
         state.columnIndex = index;
-        const name = table.fields[index] || "";
-        let warning = problem || "";
-        if (!warning && isUsableUrl(name)) {
-            warning = "The column name looks like a URL: the first row of the file may not be a header row.";
-        }
-        showMessage("detailsUrlMessage", warning, problem ? "error" : "warning");
+        const name = table.fields[index] || "URL";
+        showMessage("detailsUrlMessage", isUsableUrl(name) ?
+            "The column name looks like a URL: the first row of the file may not be a header row (it is not visited)." : "", "warning");
         setUrls(table.rows.map(row => (row[index] == null ? "" : String(row[index]))), name);
     }
 
     /**
      * Sets the URLs to visit. Results are cleared when the list actually changes.
      * @param {string[]} urls - Values of the URL column, empty ones included.
-     * @param {string} [columnName] - Name of the URL column, reused as the first result column.
+     * @param {string} columnName - Name of the URL column, reused as the first result column.
      */
     function setUrls(urls, columnName) {
         const changed = JSON.stringify(urls) !== JSON.stringify(state.urls);
         state.urls = urls;
         state.urlColumnName = columnName || "URL";
-        state.sampleUrls = urls.map(url => url.trim()).filter(isUsableUrl);
+        state.validUrls = urls.map(url => url.trim()).filter(isUsableUrl);
         if (changed) {
-            state.sampleIndex = 0;
+            state.testIndex = 0;
+            state.testChosen = false;
             resetResults();
-            chooseInitialSample();
         }
-        const usable = state.sampleUrls.length;
-        const empty = urls.filter(url => !url.trim()).length;
-        const other = urls.length - usable - empty;
-        const notes = [];
-        if (other) notes.push(other + (other === 1 ? " other value" : " other values"));
-        if (empty) notes.push(empty + " empty");
-        $id("detailsUrlCount").textContent = usable + (usable === 1 ? " URL" : " URLs") +
-            (notes.length ? " (" + notes.join(", ") + ")" : "");
-        updateSampleUi();
-        updateRunUi();
+        const usable = state.validUrls.length;
+        const skipped = urls.length - usable;
+        $id("detailsUrlCount").textContent = plural(usable, "URL") + (skipped ? " (" + skipped + " skipped)" : "");
+        renderUrlList();
+        $id("detailsToStep2").disabled = !usable;
+        updateStepper();
     }
 
-    // --- Sample page ---
+    /**
+     * Lists the values of the URL column, numbered; values that are not visited are struck out.
+     */
+    function renderUrlList() {
+        const list = $id("detailsUrlList");
+        list.textContent = "";
+        list.hidden = !state.urls.length;
+        const fragment = document.createDocumentFragment();
+        state.urls.slice(0, URL_LIST_LIMIT).forEach((value, index) => {
+            const item = document.createElement("li");
+            item.classList.toggle("is-skipped", !isUsableUrl(value.trim()));
+            const num = document.createElement("span");
+            num.className = "osd-url-num";
+            num.textContent = String(index + 1);
+            const text = document.createElement("span");
+            text.className = "osd-url-value";
+            text.textContent = value.trim() || "(empty)";
+            text.title = item.classList.contains("is-skipped") ? "Not a page URL: skipped" : value.trim();
+            item.append(num, text);
+            fragment.appendChild(item);
+        });
+        if (state.urls.length > URL_LIST_LIMIT) {
+            const more = document.createElement("li");
+            more.className = "osd-url-more";
+            more.textContent = "… and " + (state.urls.length - URL_LIST_LIMIT) + " more";
+            fragment.appendChild(more);
+        }
+        list.appendChild(fragment);
+    }
+
+    // --- Target tab ---
 
     /**
      * Reads the target tab, or null when it is gone.
@@ -360,57 +458,42 @@
     }
 
     /**
-     * Starts on the URL currently shown in the target tab when it belongs to the list.
+     * Normalizes a URL for comparisons ("http://a.b" and "http://a.b/" are the same page).
+     * @param {string} url - URL.
+     * @returns {string} Normalized URL, or the input when it does not parse.
      */
-    async function chooseInitialSample() {
-        const tab = await getTargetTab();
-        const index = tab ? state.sampleUrls.indexOf(tab.url) : -1;
-        state.sampleIndex = index >= 0 ? index : 0;
-        updateSampleUi();
-    }
-
-    /**
-     * Shows the sample URL. When no URL list is set, the box stays empty and its placeholder
-     * names the current page of the target tab, where fields are then picked.
-     */
-    async function updateSampleUi() {
-        const hasList = state.sampleUrls.length > 0;
-        const input = $id("detailsSampleUrl");
-        $id("detailsSamplePrev").disabled = !hasList || state.sampleUrls.length < 2 || isBusy();
-        $id("detailsSampleNext").disabled = !hasList || state.sampleUrls.length < 2 || isBusy();
-        if (hasList) {
-            input.value = state.sampleUrls[state.sampleIndex] || "";
-            input.placeholder = "";
-        } else {
-            const tab = await getTargetTab();
-            state.currentPageUrl = tab ? tab.url : "";
-            input.value = "";
-            input.placeholder = state.currentPageUrl ? "No URL yet: current page " + state.currentPageUrl : "No URL yet";
+    function normalizeUrl(url) {
+        try {
+            return new URL(String(url || "").trim()).href;
+        } catch (error) {
+            return String(url || "").trim();
         }
-        refreshSavedBar();
     }
 
     /**
-     * Returns the sample page address: the chosen URL of the list, else the current page.
-     * @returns {string} URL, or "".
+     * Opens a fresh port with the page so that it removes what this window drew there when the
+     * window closes. The previous port is closed after the new one is open.
      */
-    function getSampleUrl() {
-        return state.sampleUrls.length ? state.sampleUrls[state.sampleIndex] || "" : state.currentPageUrl;
+    function connectSessionPort() {
+        const previous = state.port;
+        try {
+            const port = chromeInstance.tabs.connect(targetTabId, { name: DETAILS_PORT_NAME });
+            port.onDisconnect.addListener(() => {
+                void chromeInstance.runtime.lastError;
+                if (state.port === port) state.port = null;
+            });
+            state.port = port;
+        } catch (error) {
+            state.port = null;
+        }
+        if (previous && previous !== state.port) {
+            try {
+                previous.disconnect();
+            } catch (error) {
+                // Already closed with its page
+            }
+        }
     }
-
-    /**
-     * Moves to the previous or next sample URL (looping) and opens it in the target tab.
-     * @param {number} step - -1 or +1.
-     */
-    function moveSample(step) {
-        const count = state.sampleUrls.length;
-        if (!count) return;
-        state.sampleIndex = (state.sampleIndex + step + count) % count;
-        updateSampleUi();
-        navigateTab(state.sampleUrls[state.sampleIndex], LOAD_TIMEOUT_MS);
-    }
-
-    // --- Target tab ---
 
     /**
      * Sends a message to the content script of the target tab.
@@ -437,37 +520,72 @@
         for (;;) {
             const response = await sendToTab(message);
             if (response !== undefined) return response;
-            if (Date.now() + RETRY_INTERVAL_MS > deadline || (isCancelled && isCancelled())) return undefined;
-            await sleep(RETRY_INTERVAL_MS);
+            if (Date.now() + READY_POLL_MS > deadline || (isCancelled && isCancelled())) return undefined;
+            await sleep(READY_POLL_MS);
         }
     }
 
     /**
-     * Opens a URL in the target tab and waits until it has finished loading.
+     * Opens a URL in the target tab and waits until the page has loaded and its content script
+     * answers, with a time limit. When the tab already shows that exact URL, the page is only
+     * asked whether it is ready; a change of the #fragment only is detected by the address
+     * the page reports, so it never waits for a load that does not happen.
      * @param {string} url - Address to open.
-     * @param {number} timeoutMs - Longest wait.
-     * @returns {Promise<boolean>} True when loaded, false on time-out or failure.
+     * @param {number} limitMs - Longest wait.
+     * @param {{isCancelled: Function, busy: boolean}} [options] - Give up early; show the
+     *     "Extracting..." overlay in the page as soon as it answers.
+     * @returns {Promise<boolean>} True when the page is ready.
      */
-    function navigateTab(url, timeoutMs) {
-        return new Promise(resolve => {
-            let sawLoading = false;
-            let done = false;
-            const finish = loaded => {
-                if (done) return;
-                done = true;
-                clearTimeout(timer);
-                chromeInstance.tabs.onUpdated.removeListener(onUpdated);
-                resolve(loaded);
-            };
-            const onUpdated = (tabId, changeInfo) => {
-                if (tabId !== targetTabId) return;
-                if (changeInfo.status === "loading") sawLoading = true;
-                if (changeInfo.status === "complete" && sawLoading) finish(true);
-            };
-            const timer = setTimeout(() => finish(false), timeoutMs);
+    async function loadPage(url, limitMs, options) {
+        const isCancelled = options && options.isCancelled || (() => false);
+        const pingMessage = { action: "detailsPing" };
+        if (options && options.busy) pingMessage.busy = true;
+        const deadline = Date.now() + Math.max(READY_POLL_MS, limitMs);
+        const target = normalizeUrl(url);
+        const tab = await getTargetTab();
+        if (!tab) return false;
+
+        let navigated = false;
+        const onUpdated = (tabId, changeInfo) => {
+            if (tabId === targetTabId && (changeInfo.status === "loading" || changeInfo.url)) navigated = true;
+        };
+        let alreadyThere = normalizeUrl(tab.url) === target && !tab.pendingUrl;
+        if (!alreadyThere) {
             chromeInstance.tabs.onUpdated.addListener(onUpdated);
-            Promise.resolve(chromeInstance.tabs.update(targetTabId, { url: url })).catch(() => finish(false));
-        });
+            try {
+                await chromeInstance.tabs.update(targetTabId, { url: url });
+            } catch (error) {
+                chromeInstance.tabs.onUpdated.removeListener(onUpdated);
+                return false;
+            }
+        }
+        // A page already shown but without a content script (opened before the extension) is reloaded once
+        let reloadAt = alreadyThere ? Date.now() + 1000 : 0;
+        try {
+            while (Date.now() < deadline && !isCancelled()) {
+                const current = await getTargetTab();
+                if (!current) return false;
+                if (current.status === "complete") {
+                    const response = await sendToTab(pingMessage);
+                    if (response && isCancelled() && pingMessage.busy) sendToTab({ action: "detailsBusy", on: false });
+                    const sameDocument = response && normalizeUrl(response.url) === target;
+                    if (response && response.ready && (alreadyThere || navigated || sameDocument)) {
+                        connectSessionPort();
+                        return true;
+                    }
+                    if (!response && reloadAt && Date.now() > reloadAt) {
+                        reloadAt = 0;
+                        alreadyThere = false;
+                        chromeInstance.tabs.onUpdated.addListener(onUpdated);
+                        chromeInstance.tabs.reload(targetTabId).catch(() => {});
+                    }
+                }
+                await sleep(READY_POLL_MS);
+            }
+            return false;
+        } finally {
+            chromeInstance.tabs.onUpdated.removeListener(onUpdated);
+        }
     }
 
     /**
@@ -484,107 +602,683 @@
         }
     }
 
-    // --- Fields ---
+    // --- Templates ---
 
     /**
-     * Returns a field name not used yet ("price", "price (2)"...).
-     * @param {string} name - Wanted name.
+     * Returns the registrable domain of a URL, without the PSL: the last two labels, or three
+     * under a country code with a generic second level (shop.example.co.uk -> example.co.uk).
+     * IP addresses and single-label hosts are kept whole.
+     * @param {string} url - URL.
+     * @returns {string} Domain, or "".
+     */
+    function getRegistrableDomain(url) {
+        let host = "";
+        try {
+            host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+        } catch (error) {
+            return "";
+        }
+        if (!host || /^[\d.]+$/.test(host) || host.indexOf(":") !== -1 || host.indexOf("[") !== -1) return host;
+        host = host.replace(/^www\d*\./, "");
+        const parts = host.split(".");
+        if (parts.length <= 2) return host;
+        const last = parts[parts.length - 1];
+        const second = parts[parts.length - 2];
+        if (last.length === 2 && SECOND_LEVEL_LABELS.has(second)) return parts.slice(-3).join(".");
+        return parts.slice(-2).join(".");
+    }
+
+    /**
+     * Returns the URL of the test page.
+     * @returns {string} URL, or "".
+     */
+    function getTestUrl() {
+        return state.validUrls[state.testIndex] || "";
+    }
+
+    /**
+     * Returns the domain of the test page.
+     * @returns {string} Domain, or "".
+     */
+    function getTestDomain() {
+        return getRegistrableDomain(getTestUrl());
+    }
+
+    /**
+     * Returns the selected template, or null.
+     * @returns {Object|null} Template.
+     */
+    function getSelectedTemplate() {
+        return state.templates.find(template => template.id === state.templateId) || null;
+    }
+
+    /**
+     * Returns the templates of a domain, the most recently updated first.
+     * @param {string} domain - Domain.
+     * @returns {Object[]} Templates.
+     */
+    function getDomainTemplates(domain) {
+        return state.templates.filter(template => template.domain === domain)
+            .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    }
+
+    /**
+     * Returns a template name not used yet on the domain ("x", "x (2)"...).
+     * @param {string} base - Wanted name.
+     * @param {string} domain - Domain.
+     * @param {string} [exceptId] - Template whose own name does not count.
      * @returns {string} Unique name.
      */
-    function uniqueFieldName(name) {
-        const base = (name || "").trim() || "field";
-        const used = new Set(state.fields.map(field => field.name));
-        let candidate = base;
-        for (let n = 2; used.has(candidate); n++) candidate = base + " (" + n + ")";
-        return candidate;
+    function uniqueTemplateName(base, domain, exceptId) {
+        const used = new Set(state.templates.filter(t => t.domain === domain && t.id !== exceptId).map(t => t.name));
+        let name = base;
+        for (let n = 2; used.has(name); n++) name = base + " (" + n + ")";
+        return name;
     }
 
     /**
-     * Adds picked fields to the list.
-     * @param {Array<{name: string, kind: string, selectors: string[], sample: string}>} picks - New fields.
+     * Creates an id for a template or a field.
+     * @param {string} prefix - Prefix.
+     * @returns {string} Id.
      */
-    function addFields(picks) {
-        picks.forEach(pick => {
-            if (!pick || !Array.isArray(pick.selectors) || !pick.selectors.length) return;
-            state.fields.push({
-                id: state.nextFieldId++,
-                name: uniqueFieldName(pick.name),
-                kind: KIND_LABELS[pick.kind] ? pick.kind : "text",
-                selectors: pick.selectors.slice(0, 3).map(String),
-                sample: String(pick.sample || "")
-            });
+    function createId(prefix) {
+        return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
+    /**
+     * Brings two wait bounds in range: integers >= 0 with min <= max.
+     * @param {*} wait - Raw {min, max}.
+     * @returns {{min: number, max: number}} Bounds in seconds.
+     */
+    function normalizeWait(wait) {
+        const read = (value, fallback) => {
+            const number = parseInt(value, 10);
+            return Number.isFinite(number) && number >= 0 ? Math.min(number, 3600) : fallback;
+        };
+        const min = read(wait && wait.min, DEFAULT_WAIT.min);
+        return { min: min, max: Math.max(min, read(wait && wait.max, DEFAULT_WAIT.max)) };
+    }
+
+    /**
+     * Checks and cleans a template read from storage or from a file.
+     * @param {*} raw - Candidate template.
+     * @returns {Object|null} Clean template, or null when it is not usable.
+     */
+    function sanitizeTemplate(raw) {
+        if (!raw || typeof raw !== "object" || !Array.isArray(raw.fields)) return null;
+        const usedIds = new Set();
+        const fields = [];
+        raw.fields.slice(0, MAX_TEMPLATE_FIELDS).forEach((field, index) => {
+            if (!field || typeof field !== "object" || !KIND_LABELS[field.kind] || !Array.isArray(field.selectors)) return;
+            const selectors = field.selectors.filter(selector => typeof selector === "string" && selector.trim() &&
+                selector.length <= 2000).slice(0, 3);
+            if (!selectors.length) return;
+            let id = typeof field.id === "string" && field.id && field.id.length <= 64 ? field.id : "f" + (index + 1);
+            while (usedIds.has(id)) id += "_";
+            usedIds.add(id);
+            const name = typeof field.name === "string" && field.name.trim() ? field.name.trim().slice(0, 120) : KIND_LABELS[field.kind];
+            fields.push({ id: id, name: name, kind: field.kind, selectors: selectors });
         });
-        renderFieldList();
-        onFieldsChanged();
+        if (!fields.length) return null;
+        const renames = {};
+        if (raw.renames && typeof raw.renames === "object") {
+            Object.keys(raw.renames).forEach(key => {
+                const value = raw.renames[key];
+                if ((key === "url" || usedIds.has(key)) && typeof value === "string" && value.trim()) {
+                    renames[key] = value.trim().slice(0, 120);
+                }
+            });
+        }
+        const now = new Date().toISOString();
+        return {
+            id: typeof raw.id === "string" && raw.id ? raw.id : createId("t"),
+            version: TEMPLATE_VERSION,
+            domain: typeof raw.domain === "string" ? raw.domain.trim().toLowerCase() : "",
+            name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 120) : "Template",
+            fields: fields,
+            wait: normalizeWait(raw.wait),
+            renames: renames,
+            createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,
+            updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : now
+        };
     }
 
     /**
-     * Removes a field.
-     * @param {number} fieldId - Field id.
+     * Turns the field sets saved per host by earlier builds into templates (once).
+     * @param {Object} legacy - Field sets by hostname.
+     * @param {Object[]} templates - Current templates (completed in place).
      */
-    function removeField(fieldId) {
-        state.fields = state.fields.filter(field => field.id !== fieldId);
-        renderFieldList();
-        onFieldsChanged();
+    function migrateLegacyFieldSets(legacy, templates) {
+        Object.keys(legacy || {}).forEach(host => {
+            const set = legacy[host];
+            const domain = getRegistrableDomain("http://" + host + "/");
+            const template = sanitizeTemplate({
+                domain: domain,
+                fields: set && Array.isArray(set.fields) ? set.fields.map((field, i) => Object.assign({}, field, { id: "f" + (i + 1) })) : [],
+                createdAt: set && set.savedAt,
+                updatedAt: set && set.savedAt
+            });
+            if (!template) return;
+            let name = domain + " details";
+            for (let n = 2; templates.some(t => t.domain === domain && t.name === name); n++) name = domain + " details (" + n + ")";
+            template.name = name;
+            templates.push(template);
+        });
     }
 
     /**
-     * Draws the field list: kind, editable name, sample value and remove button.
+     * Reads the templates from storage (migrating older saved field sets).
+     * @returns {Promise<Object[]>} Templates.
      */
-    function renderFieldList() {
-        const list = $id("detailsFieldList");
-        list.innerHTML = "";
-        state.fields.forEach(field => {
-            const item = document.createElement("li");
-            item.className = "osd-field";
-            item.dataset.fieldId = String(field.id);
+    async function readTemplates() {
+        try {
+            const stored = await chromeInstance.storage.local.get([TEMPLATES_KEY, LEGACY_FIELD_SETS_KEY]);
+            const templates = (Array.isArray(stored[TEMPLATES_KEY]) ? stored[TEMPLATES_KEY] : [])
+                .map(sanitizeTemplate).filter(Boolean);
+            if (stored[LEGACY_FIELD_SETS_KEY]) {
+                migrateLegacyFieldSets(stored[LEGACY_FIELD_SETS_KEY], templates);
+                await chromeInstance.storage.local.set({ [TEMPLATES_KEY]: templates });
+                await chromeInstance.storage.local.remove(LEGACY_FIELD_SETS_KEY);
+            }
+            return templates;
+        } catch (error) {
+            console.error("Unable to read the templates:", error);
+            return [];
+        }
+    }
 
+    /**
+     * Changes the stored templates: reads the latest list (other windows may have changed it),
+     * applies the change and writes the list back.
+     * @param {function(Object[]): void} change - Changes the list in place.
+     * @returns {Promise<boolean>} True when saved.
+     */
+    async function updateTemplates(change) {
+        try {
+            const templates = await readTemplates();
+            change(templates);
+            await chromeInstance.storage.local.set({ [TEMPLATES_KEY]: templates });
+            state.templates = templates;
+            return true;
+        } catch (error) {
+            console.error("Unable to save the templates:", error);
+            showMessage("detailsPickMessage", "Unable to save the template: " + (error && error.message || error), "error");
+            return false;
+        }
+    }
+
+    /**
+     * Saves a change to one template and refreshes what shows it.
+     * @param {string} templateId - Template id.
+     * @param {function(Object): void} change - Changes the template in place.
+     * @returns {Promise<boolean>} True when saved.
+     */
+    async function updateTemplate(templateId, change) {
+        let found = false;
+        const saved = await updateTemplates(templates => {
+            const template = templates.find(t => t.id === templateId);
+            if (!template) return;
+            change(template);
+            template.updatedAt = new Date().toISOString();
+            found = true;
+        });
+        onTemplatesChanged();
+        return saved && found;
+    }
+
+    /**
+     * Fills the template drop-down with the templates of the test page's domain.
+     */
+    function renderTemplateSelect() {
+        const select = $id("detailsTemplate");
+        const domain = getTestDomain();
+        const templates = getDomainTemplates(domain);
+        select.innerHTML = "";
+        if (!templates.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = domain ? "No template for " + domain + " yet" : "No template yet";
+            select.appendChild(option);
+        } else {
+            if (!getSelectedTemplate()) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "Choose a template";
+                select.appendChild(option);
+            }
+            templates.forEach(template => {
+                const option = document.createElement("option");
+                option.value = template.id;
+                option.textContent = template.name + " (" + plural(template.fields.length, "field") + ")";
+                select.appendChild(option);
+            });
+        }
+        select.value = getSelectedTemplate() ? state.templateId : "";
+        select.disabled = isBusy() || !templates.length;
+        updateTemplateMenu();
+    }
+
+    /**
+     * Enables the template menu items that apply.
+     */
+    function updateTemplateMenu() {
+        const hasTemplate = !!getSelectedTemplate();
+        $id("detailsTemplateMenuButton").disabled = isBusy();
+        $id("detailsTemplateRename").disabled = !hasTemplate;
+        $id("detailsTemplateExport").disabled = !hasTemplate;
+        $id("detailsTemplateDelete").disabled = !hasTemplate;
+        $id("detailsTemplateImport").disabled = !getTestDomain();
+    }
+
+    /**
+     * Selects a template. Results are cleared when the template changes.
+     * @param {string} templateId - Template id ("" for none).
+     */
+    function selectTemplate(templateId) {
+        const changed = templateId !== state.templateId;
+        state.templateId = templateId;
+        if (changed) resetResults();
+        const template = getSelectedTemplate();
+        if (template) applyWaitToInputs(template.wait);
+        renderTemplateSelect();
+        updateFieldsStepUi();
+        refreshPreview();
+    }
+
+    /**
+     * Reacts to a change of the stored templates (here or in another window).
+     */
+    function onTemplatesChanged() {
+        if (state.templateId && !getSelectedTemplate()) {
+            stopRun();
+            state.templateId = "";
+            resetResults();
+            if (state.step === 3) showStep(2);
+        }
+        renderTemplateSelect();
+        updateFieldsStepUi();
+        if (state.step === 3) renderRunHeader();
+        rebuildGridIfNeeded();
+    }
+
+    /**
+     * Picks a template for the test page's domain when none (or one of another site) is selected.
+     * @returns {boolean} True when the selection changed (the preview is then refreshed).
+     */
+    function chooseTemplateForDomain() {
+        const template = getSelectedTemplate();
+        const domain = getTestDomain();
+        if (template && template.domain === domain) return false;
+        const latest = getDomainTemplates(domain)[0];
+        if (!latest && !state.templateId) return false;
+        selectTemplate(latest ? latest.id : "");
+        return true;
+    }
+
+    /**
+     * Creates a new template from the fields picked in the page, and selects it.
+     * @param {Array<{name: string, kind: string, selectors: string[], sample: string}>} picks - Picked fields.
+     */
+    async function createTemplateFromPicks(picks) {
+        const domain = getTestDomain();
+        const seen = {};
+        const fields = picks.filter(pick => pick && KIND_LABELS[pick.kind] && Array.isArray(pick.selectors) && pick.selectors.length)
+            .map((pick, index) => {
+                const base = String(pick.name || "").trim() || KIND_LABELS[pick.kind];
+                let name = base;
+                for (let n = 2; seen[name]; n++) name = base + " (" + n + ")";
+                seen[name] = true;
+                return { id: "f" + (index + 1), name: name, kind: pick.kind, selectors: pick.selectors.slice(0, 3).map(String) };
+            });
+        if (!fields.length) {
+            showMessage("detailsPickMessage", "Nothing was selected.", "warning");
+            return;
+        }
+        const now = new Date().toISOString();
+        const template = {
+            id: createId("t"),
+            version: TEMPLATE_VERSION,
+            domain: domain,
+            name: uniqueTemplateName(domain + " details", domain),
+            fields: fields,
+            wait: normalizeWait(DEFAULT_WAIT),
+            renames: {},
+            createdAt: now,
+            updatedAt: now
+        };
+        if (!(await updateTemplates(templates => { templates.push(template); }))) return;
+        showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
+        selectTemplate(template.id);
+    }
+
+    /**
+     * Returns a file name without characters that systems refuse.
+     * @param {string} name - Wanted name.
+     * @returns {string} Safe file name base.
+     */
+    function toFileName(name) {
+        return String(name || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "page-details";
+    }
+
+    /**
+     * Downloads the selected template as a JSON file.
+     */
+    function exportTemplate() {
+        const template = getSelectedTemplate();
+        if (!template) return;
+        const file = {
+            format: TEMPLATE_FORMAT,
+            version: TEMPLATE_VERSION,
+            template: {
+                name: template.name,
+                domain: template.domain,
+                fields: template.fields,
+                wait: template.wait,
+                renames: template.renames,
+                createdAt: template.createdAt,
+                updatedAt: template.updatedAt
+            }
+        };
+        saveAs(new Blob([JSON.stringify(file, null, 2)], { type: "application/json" }), toFileName(template.name) + ".json");
+    }
+
+    /**
+     * Imports a template from a JSON file, for the test page's domain, and selects it.
+     * @param {File} file - Chosen file.
+     */
+    async function importTemplate(file) {
+        if (!file) return;
+        const domain = getTestDomain();
+        let template = null;
+        try {
+            const data = JSON.parse(await file.text());
+            const raw = data && data.format === TEMPLATE_FORMAT ? data.template : data;
+            template = sanitizeTemplate(raw && typeof raw === "object" ? Object.assign({}, raw, { id: "" }) : null);
+        } catch (error) {
+            template = null;
+        }
+        if (!template || !domain) {
+            showMessage("detailsPickMessage", "This file is not a page details template.", "error");
+            return;
+        }
+        const madeFor = template.domain;
+        template.id = createId("t");
+        template.domain = domain;
+        template.name = uniqueTemplateName(template.name, domain);
+        template.createdAt = template.updatedAt = new Date().toISOString();
+        if (!(await updateTemplates(templates => { templates.push(template); }))) return;
+        showMessage("detailsPickMessage", "Template \"" + template.name + "\" imported" +
+            (madeFor && madeFor !== domain ? " (made for " + madeFor + ", now used on " + domain + ")." : "."));
+        selectTemplate(template.id);
+    }
+
+    /**
+     * Shows an inline prompt (text input, or a confirmation when no value is given).
+     * @param {string} formId - Prompt form id.
+     * @param {string} label - Question.
+     * @param {string|null} value - Initial text, or null for a plain confirmation.
+     * @param {string} okText - Text of the confirm button.
+     * @param {function(string): void} onOk - Called with the entered text.
+     */
+    function openPrompt(formId, label, value, okText, onOk) {
+        const form = $id(formId);
+        const input = form.querySelector("input");
+        const ok = form.querySelector("button[type=submit]");
+        form.querySelector(".osd-prompt-label").textContent = label;
+        input.hidden = value === null;
+        input.value = value || "";
+        ok.textContent = okText;
+        ok.classList.toggle("osd-btn-danger", value === null);
+        form.hidden = false;
+        form.onsubmit = event => {
+            event.preventDefault();
+            form.hidden = true;
+            onOk(input.value.trim());
+        };
+        (value === null ? ok : input).focus();
+        if (value !== null) input.select();
+    }
+
+    /**
+     * Closes an inline prompt.
+     * @param {string} formId - Prompt form id.
+     */
+    function closePrompt(formId) {
+        $id(formId).hidden = true;
+    }
+
+    /**
+     * Shows or hides the template menu.
+     * @param {boolean} open - Open the menu.
+     */
+    function toggleTemplateMenu(open) {
+        $id("detailsTemplateMenu").hidden = !open;
+        $id("detailsTemplateMenuButton").setAttribute("aria-expanded", String(open));
+        if (open) updateTemplateMenu();
+    }
+
+    /**
+     * Closes the template menu.
+     */
+    function closeTemplateMenu() {
+        toggleTemplateMenu(false);
+    }
+
+    /**
+     * Runs a template menu action.
+     * @param {"rename"|"export"|"import"|"delete"} action - Action.
+     */
+    function onTemplateMenuAction(action) {
+        closeTemplateMenu();
+        const template = getSelectedTemplate();
+        if (action === "import") {
+            $id("detailsTemplateFile").value = "";
+            $id("detailsTemplateFile").click();
+            return;
+        }
+        if (!template) return;
+        if (action === "export") {
+            exportTemplate();
+        } else if (action === "rename") {
+            openPrompt("detailsTemplatePrompt", "Name", template.name, "Save", name => {
+                if (!name) return;
+                updateTemplate(template.id, t => { t.name = uniqueTemplateName(name.slice(0, 120), t.domain, t.id); });
+            });
+        } else if (action === "delete") {
+            openPrompt("detailsTemplatePrompt", "Delete \"" + template.name + "\"?", null, "Delete", () => {
+                updateTemplates(templates => {
+                    const index = templates.findIndex(t => t.id === template.id);
+                    if (index !== -1) templates.splice(index, 1);
+                }).then(onTemplatesChanged);
+            });
+        }
+    }
+
+    // --- Step 2: test page, picking and preview ---
+
+    /**
+     * Prepares the fields step: test page, templates of its domain, preview.
+     */
+    async function onFieldsStepShown() {
+        if (!state.testChosen) {
+            state.testChosen = true;
+            const tab = await getTargetTab();
+            const index = tab ? state.validUrls.map(normalizeUrl).indexOf(normalizeUrl(tab.url)) : -1;
+            state.testIndex = index >= 0 ? index : 0;
+        }
+        updateTestUrlUi();
+        const changed = chooseTemplateForDomain();
+        renderTemplateSelect();
+        updateFieldsStepUi();
+        if (!changed && getSelectedTemplate()) refreshPreview();
+    }
+
+    /**
+     * Shows the test URL and the state of its arrows.
+     */
+    function updateTestUrlUi() {
+        const count = state.validUrls.length;
+        $id("detailsTestUrl").value = getTestUrl();
+        $id("detailsTestUrl").title = getTestUrl();
+        $id("detailsTestPrev").disabled = count < 2 || isBusy();
+        $id("detailsTestNext").disabled = count < 2 || isBusy();
+    }
+
+    /**
+     * Updates the buttons of the fields step.
+     */
+    function updateFieldsStepUi() {
+        const busy = isBusy();
+        $id("detailsPickStart").hidden = state.picking;
+        $id("detailsPickStart").disabled = busy || !getTestUrl();
+        $id("detailsPickStart").classList.toggle("osd-btn-primary", !getSelectedTemplate());
+        $id("detailsPickStop").hidden = !state.picking;
+        $id("detailsBackTo1").disabled = busy;
+        $id("detailsToStep3").disabled = busy || !getSelectedTemplate();
+        $id("detailsTemplate").disabled = busy || !getDomainTemplates(getTestDomain()).length;
+        updateTestUrlUi();
+        updateTemplateMenu();
+        updateStepper();
+    }
+
+    /**
+     * Moves to the previous or next test URL (looping), opens it in the target tab and brings
+     * the tab to the front.
+     * @param {number} step - -1 or +1.
+     */
+    async function moveTestUrl(step) {
+        const count = state.validUrls.length;
+        if (!count || isBusy()) return;
+        state.testIndex = (state.testIndex + step + count) % count;
+        updateTestUrlUi();
+        const changed = chooseTemplateForDomain();
+        renderTemplateSelect();
+        focusTargetTab();
+        if (changed) return;
+        if (getSelectedTemplate()) {
+            refreshPreview();
+        } else {
+            const token = ++state.previewToken;
+            await loadPage(getTestUrl(), TEST_PAGE_TIMEOUT_MS, { isCancelled: () => token !== state.previewToken });
+        }
+    }
+
+    /**
+     * Opens the test page in the target tab unless it already shows it.
+     * @param {Function} isCancelled - Returns true to give up.
+     * @returns {Promise<boolean>} True when the page is ready.
+     */
+    function ensureTestPage(isCancelled) {
+        return loadPage(getTestUrl(), TEST_PAGE_TIMEOUT_MS, { isCancelled: isCancelled });
+    }
+
+    /**
+     * Returns the column name of a field (renamed or as picked).
+     * @param {Object} template - Template.
+     * @param {Object} field - Field.
+     * @returns {string} Column name.
+     */
+    function getFieldColumnName(template, field) {
+        return template.renames[field.id] || field.name;
+    }
+
+    /**
+     * Loads the test page if needed, waits for a field to show, reads one row and highlights
+     * the elements found in the page.
+     */
+    async function refreshPreview() {
+        const token = ++state.previewToken;
+        const template = getSelectedTemplate();
+        const box = $id("detailsPreview");
+        if (!template || state.step !== 2) {
+            box.hidden = true;
+            return;
+        }
+        box.hidden = false;
+        renderPreviewRows(template, null);
+        $id("detailsPreviewStatus").textContent = "Loading the test page…";
+        const isCancelled = () => token !== state.previewToken;
+        const ready = await ensureTestPage(isCancelled);
+        if (isCancelled()) return;
+        if (!ready) {
+            $id("detailsPreviewStatus").textContent = "The test page does not answer";
+            return;
+        }
+        $id("detailsPreviewStatus").textContent = "Reading…";
+        const response = await sendToTab({
+            action: "detailsPreview",
+            fields: template.fields.map(field => ({ kind: field.kind, selectors: field.selectors })),
+            waitMs: PREVIEW_WAIT_MS
+        });
+        if (isCancelled()) return;
+        if (!response || !Array.isArray(response.values)) {
+            $id("detailsPreviewStatus").textContent = "The test page does not answer";
+            return;
+        }
+        connectSessionPort();
+        const found = response.values.filter(value => value).length;
+        $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found";
+        renderPreviewRows(template, response.values);
+    }
+
+    /**
+     * Draws the preview table: kind, column name, value read in the test page.
+     * @param {Object} template - Template.
+     * @param {string[]|null} values - Values, or null while loading.
+     */
+    function renderPreviewRows(template, values) {
+        const body = $id("detailsPreviewBody");
+        body.textContent = "";
+        template.fields.forEach((field, index) => {
+            const row = document.createElement("tr");
+            const kindCell = document.createElement("td");
+            kindCell.className = "osd-preview-kind";
             const kind = document.createElement("span");
             kind.className = "osd-kind osd-kind-" + field.kind;
             kind.textContent = KIND_LABELS[field.kind];
+            kindCell.appendChild(kind);
 
-            const name = document.createElement("input");
-            name.type = "text";
-            name.className = "osd-input osd-field-name";
-            name.value = field.name;
-            name.setAttribute("aria-label", "Column name");
-            name.disabled = isBusy();
-            name.addEventListener("input", () => {
-                field.name = name.value;
-                onFieldsChanged(true);
-            });
+            const nameCell = document.createElement("td");
+            nameCell.className = "osd-preview-name";
+            nameCell.textContent = getFieldColumnName(template, field);
+            nameCell.title = field.selectors.join("\n");
 
-            const sample = document.createElement("span");
-            sample.className = "osd-field-sample";
-            sample.textContent = field.sample || "(saved field)";
-            sample.title = field.sample + "\n\n" + field.selectors.join("\n");
+            const valueCell = document.createElement("td");
+            const value = values ? values[index] || "" : "";
+            valueCell.className = "osd-preview-value" + (values && !value ? " is-missing" : "");
+            valueCell.textContent = values ? value || "Not found" : "…";
+            valueCell.title = value;
 
+            const removeCell = document.createElement("td");
+            removeCell.className = "osd-preview-remove";
             const remove = document.createElement("button");
             remove.type = "button";
-            remove.className = "osd-btn osd-btn-icon osd-field-remove";
-            remove.setAttribute("aria-label", "Remove field " + field.name);
-            remove.title = "Remove field";
+            remove.className = "osd-btn osd-btn-icon";
             remove.textContent = "×";
-            remove.disabled = isBusy();
-            remove.addEventListener("click", () => removeField(field.id));
+            remove.title = "Remove this field from the template";
+            remove.setAttribute("aria-label", "Remove field " + getFieldColumnName(template, field));
+            remove.disabled = template.fields.length < 2 || isBusy();
+            remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
+            removeCell.appendChild(remove);
 
-            item.append(kind, name, sample, remove);
-            list.appendChild(item);
+            row.append(kindCell, nameCell, valueCell, removeCell);
+            body.appendChild(row);
         });
-        $id("detailsNoFields").hidden = state.fields.length > 0;
     }
 
     /**
-     * Reacts to a change of the field list or of a field name.
-     * @param {boolean} [nameOnly=false] - Only a name changed.
+     * Removes a field from a template (a template keeps at least one field).
+     * @param {string} templateId - Template id.
+     * @param {string} fieldId - Field id.
      */
-    function onFieldsChanged(nameOnly) {
-        if (!nameOnly) updateRunUi();
-        $id("detailsSaveFields").disabled = isBusy() || !state.fields.length;
-        onResultsChanged();
+    async function removeTemplateField(templateId, fieldId) {
+        await updateTemplate(templateId, template => {
+            if (template.fields.length < 2) return;
+            template.fields = template.fields.filter(field => field.id !== fieldId);
+            delete template.renames[fieldId];
+        });
+        refreshPreview();
     }
-
-    // --- Picking ---
 
     /**
      * Tells whether picking or a run is in progress.
@@ -595,7 +1289,7 @@
     }
 
     /**
-     * Opens the sample page if needed, then turns on the picker in the target tab.
+     * Opens the test page if needed, brings it to the front and turns on the picker there.
      */
     async function startPicking() {
         if (isBusy()) return;
@@ -604,114 +1298,132 @@
             return;
         }
         const token = ++state.pickToken;
+        state.previewToken++;
         state.picking = true;
+        state.picks = [];
+        closeTemplateMenu();
+        closePrompt("detailsTemplatePrompt");
         updateBusyUi();
-        showMessage("detailsPickMessage", "Opening the sample page...");
+        showMessage("detailsPickMessage", "Opening the test page…");
 
-        const tab = await getTargetTab();
-        if (!tab) {
-            endPicking("The target tab was closed. Close this window and click the extension icon again.", "error");
+        const ready = await ensureTestPage(() => token !== state.pickToken);
+        if (token !== state.pickToken) return;
+        if (!ready) {
+            endPicking(token, "The test page does not answer. Check that it opens, or use another test page.", "error");
             return;
         }
-        const sampleUrl = state.sampleUrls[state.sampleIndex];
-        if (sampleUrl && tab.url !== sampleUrl) {
-            await navigateTab(sampleUrl, LOAD_TIMEOUT_MS);
-        }
-        if (token !== state.pickToken) return;
-
+        await focusTargetTab();
         const started = await sendToTabWithRetry({ action: "detailsPickerStart" }, ANSWER_TIMEOUT_MS);
         if (token !== state.pickToken) return;
         if (!started || !started.ok) {
-            endPicking("The page does not answer. Reload it, or open a regular web page, then try again.", "error");
+            endPicking(token, "The page does not answer. Reload it, or open a regular web page, then try again.", "error");
             return;
         }
-        try {
-            state.pickerPort = chromeInstance.tabs.connect(targetTabId, { name: PICKER_PORT_NAME });
-        } catch (error) {
-            state.pickerPort = null;
-        }
-        await focusTargetTab();
-        showMessage("detailsPickMessage", 'Click the data to extract in the page, then click "Finish picking".');
-        pollPicks(token, 0);
+        connectSessionPort();
+        showMessage("detailsPickMessage", "Click the data to extract in the page, then click Finish.");
+        pollPicks(token);
     }
 
     /**
-     * Waits for new picks from the page and adds them, until picking ends.
+     * Waits for new picks from the page until picking ends.
      * @param {number} token - Picking session.
-     * @param {number} known - Number of picks already received.
      */
-    async function pollPicks(token, known) {
-        while (token === state.pickToken && state.picking) {
+    async function pollPicks(token) {
+        let known = 0;
+        while (token === state.pickToken) {
             const response = await sendToTab({ action: "detailsPickerPoll", known: known });
             if (token !== state.pickToken) return;
             if (!response || !Array.isArray(response.picks)) {
-                endPicking("Picking ended because the page changed or was closed.", "warning");
+                endPicking(token, "Selecting ended because the page changed or was closed.", "warning");
                 return;
             }
-            if (response.picks.length > known) {
-                addFields(response.picks.slice(known));
-                known = response.picks.length;
-            }
-            if (!response.active) {
-                endPicking("");
+            state.picks = response.picks;
+            known = response.picks.length;
+            if (response.active) {
+                showMessage("detailsPickMessage", plural(known, "field") + " selected. Click Finish in the page when done.");
+            } else {
+                endPicking(token, "");
                 return;
             }
         }
     }
 
     /**
-     * Asks the page to end picking.
+     * Asks the page to end picking (the poll then receives the final picks).
      */
     async function finishPicking() {
+        const token = state.pickToken;
         const response = await sendToTab({ action: "detailsPickerStop" });
-        if (!response) endPicking("");
+        if (!response) {
+            endPicking(token, "");
+        } else if (Array.isArray(response.picks) && token === state.pickToken) {
+            state.picks = response.picks;
+        }
     }
 
     /**
-     * Leaves picking mode in the panel.
+     * Leaves picking mode; the picks, if any, become a new template.
+     * @param {number} token - Picking session that ends.
      * @param {string} message - Message to show ("" for none).
      * @param {"info"|"warning"|"error"} [level] - Message level.
      */
-    function endPicking(message, level) {
+    function endPicking(token, message, level) {
+        if (token !== state.pickToken) return;
         state.pickToken++;
         state.picking = false;
-        if (state.pickerPort) {
-            try {
-                state.pickerPort.disconnect();
-            } catch (error) {
-                // Already closed with its page
-            }
-            state.pickerPort = null;
-        }
+        const picks = state.picks;
+        state.picks = [];
         showMessage("detailsPickMessage", message, level);
         updateBusyUi();
+        if (picks.length) {
+            createTemplateFromPicks(picks);
+        } else if (!message) {
+            showMessage("detailsPickMessage", "Nothing was selected.", "warning");
+        }
     }
 
-    // --- Run ---
+    // --- Step 3: run ---
+
+    /**
+     * Shows the wait bounds of a template in the inputs.
+     * @param {{min: number, max: number}} wait - Bounds in seconds.
+     */
+    function applyWaitToInputs(wait) {
+        const bounds = normalizeWait(wait);
+        $id("detailsMinWait").value = String(bounds.min);
+        $id("detailsMaxWait").value = String(bounds.max);
+    }
 
     /**
      * Reads the wait bounds, in seconds.
      * @returns {{min: number, max: number}} Bounds.
      */
-    function getDelays() {
-        const min = Math.max(0, parseInt($id("detailsMinDelay").value, 10) || 0);
-        const max = Math.max(min, parseInt($id("detailsMaxDelay").value, 10) || 0);
-        return { min: min, max: max };
+    function getWait() {
+        return normalizeWait({ min: $id("detailsMinWait").value, max: $id("detailsMaxWait").value });
     }
 
     /**
-     * Keeps min <= max: raising min raises max, lowering max lowers min.
+     * Keeps min <= max (raising Min raises Max, lowering Max lowers Min) and saves both in the template.
      * @param {"min"|"max"} changed - Input the user changed.
      */
-    function linkDelays(changed) {
-        const minInput = $id("detailsMinDelay");
-        const maxInput = $id("detailsMaxDelay");
-        const min = Math.max(0, parseInt(minInput.value, 10) || 0);
-        const max = Math.max(0, parseInt(maxInput.value, 10) || 0);
+    function onWaitChanged(changed) {
+        const minInput = $id("detailsMinWait");
+        const maxInput = $id("detailsMaxWait");
+        const read = input => Math.max(0, parseInt(input.value, 10) || 0);
+        let min = read(minInput);
+        let max = read(maxInput);
         if (min > max) {
-            if (changed === "min") maxInput.value = String(min);
-            else minInput.value = String(max);
+            if (changed === "min") max = min;
+            else min = max;
         }
+        minInput.value = String(min);
+        maxInput.value = String(max);
+        const template = getSelectedTemplate();
+        if (!template) return;
+        clearTimeout(state.waitSaveTimer);
+        state.waitSaveTimer = setTimeout(() => {
+            updateTemplate(template.id, t => { t.wait = normalizeWait({ min: min, max: max }); });
+        }, 300);
     }
 
     /**
@@ -720,131 +1432,79 @@
     function resetResults() {
         state.results = [];
         state.nextIndex = 0;
-        onResultsChanged();
-        updateProgress();
-    }
-
-    /**
-     * Visits the URLs one at a time in the target tab, from the next URL to visit.
-     */
-    async function startRun() {
-        if (isBusy()) return;
-        if (isListCrawlRunning()) {
-            showMessage("detailsRunMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
-            return;
-        }
-        if (!state.sampleUrls.length || !state.fields.length) return;
-        if (state.nextIndex >= state.urls.length) resetResults();
-
-        const token = ++state.runToken;
-        const stopped = new Promise(resolve => { state.resolveStop = resolve; });
-        state.running = true;
+        state.extracted = 0;
+        state.failed = 0;
+        state.elapsedMs = 0;
         showMessage("detailsRunMessage", "");
-        updateBusyUi();
-
-        const fields = state.fields.map(field => ({ id: field.id, kind: field.kind, selectors: field.selectors }));
-        const isCancelled = () => token !== state.runToken;
-
-        while (state.nextIndex < state.urls.length && !isCancelled()) {
-            const index = state.nextIndex;
-            const url = state.urls[index].trim();
-            updateProgress(index, url);
-
-            const values = {};
-            let failed = false;
-            if (isUsableUrl(url)) {
-                failed = true;
-                if (!(await getTargetTab())) {
-                    finishRun(token, "The target tab was closed. Close this window and click the extension icon again.", "error");
-                    return;
-                }
-                const delays = getDelays();
-                const waitMs = 1000 * (delays.min + Math.random() * (delays.max - delays.min));
-                const [loaded] = await Promise.race([
-                    Promise.all([navigateTab(url, LOAD_TIMEOUT_MS), sleep(waitMs)]),
-                    stopped.then(() => [false])
-                ]);
-                if (isCancelled()) return;
-                if (loaded) {
-                    const response = await sendToTabWithRetry(
-                        { action: "detailsExtract", fields: fields },
-                        ANSWER_TIMEOUT_MS,
-                        isCancelled
-                    );
-                    if (isCancelled()) return;
-                    if (response && response.ok && Array.isArray(response.values)) {
-                        failed = false;
-                        fields.forEach((field, i) => { values[field.id] = response.values[i] == null ? "" : String(response.values[i]); });
-                    }
-                }
-            }
-
-            state.results.push({ url: state.urls[index], values: values, failed: failed });
-            state.nextIndex = index + 1;
-            onResultsChanged();
-            updateProgress();
-        }
-        const failedCount = state.results.filter(result => result.failed).length;
-        finishRun(token, failedCount ? failedCount + (failedCount === 1 ? " page" : " pages") +
-            " could not be read (error page, time-out or no answer): " +
-            (failedCount === 1 ? "its row only has" : "their rows only have") + " the URL." : "", "warning");
+        rebuildGridIfNeeded(true);
+        updateRunUi();
     }
 
     /**
-     * Stops the run at once. The page being visited is dropped and visited again on resume.
+     * Prepares the extract step.
      */
-    function stopRun() {
-        if (!state.running) return;
-        const resolveStop = state.resolveStop;
-        state.runToken++;
-        finishRun(state.runToken, "Stopped. Click Resume to continue from the next page.", "info");
-        if (resolveStop) resolveStop();
+    function onExtractStepShown() {
+        const template = getSelectedTemplate();
+        if (template) applyWaitToInputs(template.wait);
+        renderRunHeader();
+        updateRunUi();
+        rebuildGridIfNeeded(true);
     }
 
     /**
-     * Leaves the running state.
-     * @param {number} token - Run that ends.
-     * @param {string} message - Message to show.
-     * @param {"info"|"warning"|"error"} [level] - Message level.
+     * Shows the template name and domain.
      */
-    function finishRun(token, message, level) {
-        if (token !== state.runToken) return;
-        state.running = false;
-        state.resolveStop = null;
-        showMessage("detailsRunMessage", message, level);
-        updateBusyUi();
-        updateProgress();
+    function renderRunHeader() {
+        const template = getSelectedTemplate();
+        $id("detailsRunName").textContent = template ? template.name : "";
+        $id("detailsRunDomain").textContent = template ? template.domain + " · " + plural(template.fields.length, "field") : "";
     }
 
     /**
-     * Shows the progress: done / total and the page being visited.
-     * @param {number} [currentIndex] - Index of the page being visited.
-     * @param {string} [currentUrl] - Page being visited.
+     * Formats a duration as mm:ss, or hh:mm:ss from one hour.
+     * @param {number} ms - Duration.
+     * @returns {string} Formatted duration.
      */
-    function updateProgress(currentIndex, currentUrl) {
-        const total = state.urls.length;
-        const done = state.nextIndex;
-        $id("detailsProgress").hidden = !total || (!state.running && !done);
-        $id("detailsProgressBar").style.width = total ? Math.round(100 * done / total) + "%" : "0";
-        if (state.running && currentUrl !== undefined) {
-            $id("detailsProgressText").textContent = "Page " + (currentIndex + 1) + " / " + total;
-            $id("detailsProgressUrl").textContent = currentUrl;
-        } else {
-            $id("detailsProgressText").textContent = done + " / " + total + " pages done";
-            $id("detailsProgressUrl").textContent = "";
-        }
+    function formatDuration(ms) {
+        const total = Math.floor(ms / 1000);
+        const pad = n => String(n).padStart(2, "0");
+        const hours = Math.floor(total / 3600);
+        const rest = pad(Math.floor(total / 60) % 60) + ":" + pad(total % 60);
+        return hours ? pad(hours) + ":" + rest : rest;
     }
 
     /**
-     * Updates the Start / Resume / Restart button.
+     * Returns the time spent running, stops excluded.
+     * @returns {number} Milliseconds.
+     */
+    function getElapsedMs() {
+        return state.elapsedMs + (state.running ? Date.now() - state.runStartedAt : 0);
+    }
+
+    /**
+     * Counts the valid URLs not visited yet.
+     * @returns {number} Remaining pages.
+     */
+    function getRemaining() {
+        return state.urls.slice(state.nextIndex).filter(url => isUsableUrl(url.trim())).length;
+    }
+
+    /**
+     * Updates the counters, the Start / Stop button and the export buttons.
      */
     function updateRunUi() {
-        const start = $id("detailsStart");
-        const done = state.nextIndex;
-        start.textContent = done === 0 ? "Start" : (done < state.urls.length ? "Resume" : "Restart");
-        start.disabled = isBusy() || !state.sampleUrls.length || !state.fields.length;
-        start.hidden = state.running;
-        $id("detailsStop").hidden = !state.running;
+        $id("detailsExtracted").textContent = String(state.extracted);
+        $id("detailsRemaining").textContent = String(getRemaining());
+        $id("detailsDuration").textContent = formatDuration(getElapsedMs());
+        const toggle = $id("detailsRunToggle");
+        const finished = state.nextIndex >= state.urls.length && state.results.length > 0;
+        toggle.textContent = state.running ? "Stop" : (finished ? "Restart" : "Start");
+        toggle.classList.toggle("osd-btn-danger", state.running);
+        toggle.disabled = !state.running && (state.picking || !getSelectedTemplate() || !state.validUrls.length);
+        const count = state.results.length;
+        $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
+        ["detailsCsv", "detailsXlsx", "detailsCopy"].forEach(id => { if ($id(id)) $id(id).disabled = !count; });
+        if (!count) showMessage("detailsExportMessage", "");
     }
 
     /**
@@ -855,101 +1515,267 @@
         $id("tabList").disabled = state.running;
         $id("tabDetails").disabled = state.running;
         document.querySelectorAll(".osd-seg[data-source]").forEach(button => { button.disabled = busy; });
-        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinDelay", "detailsMaxDelay"].forEach(id => {
-            $id(id).disabled = state.running;
+        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinWait", "detailsMaxWait", "detailsToStep2"].forEach(id => {
+            $id(id).disabled = busy || (id === "detailsToStep2" && !state.validUrls.length);
         });
-        $id("detailsPickStart").hidden = state.picking;
-        $id("detailsPickStart").disabled = busy;
-        $id("detailsPickStop").hidden = !state.picking;
-        document.querySelectorAll("#detailsFieldList input, #detailsFieldList button").forEach(el => { el.disabled = busy; });
-        $id("detailsSaveFields").disabled = busy || !state.fields.length;
-        $id("detailsUseSaved").disabled = busy;
-        $id("detailsDeleteSaved").disabled = busy;
-        updateSampleUi();
+        renderTemplateSelect();
+        updateFieldsStepUi();
         updateRunUi();
     }
 
-    // --- Results ---
+    /**
+     * Starts the run or resumes it at the next page to visit.
+     */
+    async function startRun() {
+        if (isBusy()) return;
+        if (isListCrawlRunning()) {
+            showMessage("detailsRunMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
+            return;
+        }
+        const template = getSelectedTemplate();
+        if (!template || !state.validUrls.length) return;
+        if (!(await getTargetTab())) {
+            showMessage("detailsRunMessage", "The target tab was closed. Close this window and click the extension icon again.", "error");
+            return;
+        }
+        if (state.nextIndex >= state.urls.length) resetResults();
+
+        const runId = ++state.runId;
+        const stopped = new Promise(resolve => { state.resolveStop = resolve; });
+        const isStopped = () => runId !== state.runId;
+        const fields = template.fields.map(field => ({ id: field.id, kind: field.kind, selectors: field.selectors }));
+        state.running = true;
+        state.runStartedAt = Date.now();
+        state.ticker = setInterval(updateRunUi, 1000);
+        showMessage("detailsRunMessage", "");
+        updateBusyUi();
+
+        while (state.nextIndex < state.urls.length) {
+            const index = state.nextIndex;
+            const url = state.urls[index].trim();
+            const row = { url: state.urls[index], values: {}, failed: false };
+            if (isUsableUrl(url)) {
+                // The page takes at least Min seconds and at most about Max seconds to load
+                const wait = getWait();
+                const [ready] = await Promise.race([
+                    Promise.all([loadPage(url, Math.max(1, wait.max) * 1000, { isCancelled: isStopped, busy: true }), sleep(wait.min * 1000)]),
+                    stopped.then(() => [false])
+                ]);
+                if (isStopped()) return;
+                let response;
+                if (ready) {
+                    response = await sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true }, 2000, isStopped);
+                    if (isStopped()) return;
+                }
+                if (response && response.ok && Array.isArray(response.values)) {
+                    fields.forEach((field, i) => { row.values[field.id] = response.values[i] == null ? "" : String(response.values[i]); });
+                    state.extracted++;
+                } else {
+                    row.failed = true;
+                    state.failed++;
+                }
+            }
+            state.results.push(row);
+            state.nextIndex = index + 1;
+            appendGridRow(row);
+            updateRunUi();
+        }
+        finishRun(runId, state.failed ? plural(state.failed, "page") +
+            " could not be read (error page, time limit or no answer): only the URL is in the row." : "Done.", state.failed ? "warning" : "info");
+    }
 
     /**
-     * Builds the results table: the URL first, then one column per field, in field order.
-     * Fields added after some pages were visited are empty for those pages.
-     * @returns {{fields: string[], data: string[][]}} Table ready for the grid and the exports.
+     * Stops the run at once. The page being visited is not counted and is visited again on Start.
+     */
+    function stopRun() {
+        if (!state.running) return;
+        const resolveStop = state.resolveStop;
+        state.runId++;
+        finishRun(state.runId, "Stopped. Start continues with page " + (state.nextIndex + 1) + ".", "info");
+        if (resolveStop) resolveStop();
+    }
+
+    /**
+     * Leaves the running state and removes the overlay from the page.
+     * @param {number} runId - Run that ends.
+     * @param {string} message - Message to show.
+     * @param {"info"|"warning"|"error"} [level] - Message level.
+     */
+    function finishRun(runId, message, level) {
+        if (runId !== state.runId) return;
+        state.elapsedMs += Date.now() - state.runStartedAt;
+        state.running = false;
+        state.resolveStop = null;
+        clearInterval(state.ticker);
+        sendToTab({ action: "detailsBusy", on: false });
+        showMessage("detailsRunMessage", message, level);
+        updateBusyUi();
+    }
+
+    // --- Results grid ---
+
+    /**
+     * Returns the result column names: the URL column, then one column per field (renamed),
+     * made unique.
+     * @param {Object} template - Template.
+     * @returns {string[]} Column names.
+     */
+    function getResultColumns(template) {
+        return uniqueColumnNames([template.renames.url || state.urlColumnName || "URL"]
+            .concat(template.fields.map(field => getFieldColumnName(template, field))));
+    }
+
+    /**
+     * Turns a result into a grid row.
+     * @param {Object} template - Template.
+     * @param {{url: string, values: Object}} result - Result.
+     * @returns {string[]} Row.
+     */
+    function toGridRow(template, result) {
+        return [result.url].concat(template.fields.map(field => (field.id in result.values ? result.values[field.id] : "")));
+    }
+
+    /**
+     * Builds the results table for the exports.
+     * @returns {{fields: string[], data: string[][]}} Table.
      */
     function buildResultsTable() {
-        return {
-            fields: [state.urlColumnName || "URL"].concat(state.fields.map(field => field.name)),
-            data: state.results.map(result => [result.url].concat(
-                state.fields.map(field => (field.id in result.values ? result.values[field.id] : ""))
-            ))
-        };
+        const template = getSelectedTemplate();
+        if (!template) return { fields: [], data: [] };
+        return { fields: getResultColumns(template), data: state.results.map(result => toGridRow(template, result)) };
     }
 
     /**
-     * Reacts to new results or to a change of the fields shown.
+     * Escapes text for HTML.
+     * @param {string} text - Raw text.
+     * @returns {string} Escaped text.
      */
-    function onResultsChanged() {
-        updateRunUi();
-        const count = state.results.length;
-        $id("detailsResultCount").textContent = count ? count + (count === 1 ? " row" : " rows") : "";
-        ["detailsCsv", "detailsXlsx", "detailsCopy"].forEach(id => { $id(id).disabled = !count; });
-        if (!count) showMessage("detailsExportMessage", "");
-        renderResultsGrid();
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
     }
 
     /**
-     * Draws the read-only results grid (only while the panel is shown, so that it gets a real size).
+     * Returns the height available for the grid in the window.
+     * @returns {number} Height in pixels.
      */
-    function renderResultsGrid() {
+    function getGridHeight() {
         const container = $id("detailsHot");
-        const hasRows = state.results.length > 0;
-        $id("detailsNoResults").hidden = hasRows;
-        container.hidden = !hasRows;
+        const top = container.getBoundingClientRect().top;
+        return Math.max(160, window.innerHeight - top - 16);
+    }
 
-        if (state.grid && (!hasRows || document.body.classList.contains(DETAILS_MODE_CLASS))) {
+    /**
+     * Creates the grid again when the columns changed (or when asked), otherwise keeps it.
+     * @param {boolean} [force=false] - Recreate even if the columns are the same.
+     */
+    function rebuildGridIfNeeded(force) {
+        const template = getSelectedTemplate();
+        const container = $id("detailsHot");
+        const key = template ? JSON.stringify([template.id, getResultColumns(template), template.fields.map(f => f.id)]) : "";
+        if (!force && key === state.gridKey && state.grid) return;
+        if (state.grid) {
             state.grid.destroy();
             state.grid = null;
-            container.innerHTML = "";
         }
-        if (!hasRows || !document.body.classList.contains(DETAILS_MODE_CLASS)) return;
-
-        const table = buildResultsTable();
-        const rows = table.data.slice(0, PREVIEW_LIMIT);
-        const panelHeight = $id("detailsPanel").clientHeight;
+        container.innerHTML = "";
+        state.gridKey = key;
+        if (!template || state.step !== 3 || !document.body.classList.contains(DETAILS_MODE_CLASS)) {
+            state.gridKey = "";
+            return;
+        }
+        const columns = getResultColumns(template);
+        state.gridData = state.results.map(result => toGridRow(template, result));
         state.grid = new Handsontable(container, {
-            data: rows,
-            colHeaders: table.fields,
+            data: state.gridData,
+            colHeaders: col => {
+                const name = escapeHtml(columns[col] || "");
+                const show = col > 0 ? '<button type="button" class="osd-col-action" data-col-action="show" data-col="' + col +
+                    '" title="Show in page">&#9673;</button>' : "";
+                return '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
+                    '<button type="button" class="osd-col-action" data-col-action="rename" data-col="' + col +
+                    '" title="Rename column">&#9998;</button>' + show + "</span>";
+            },
+            columns: columns.map(() => ({ readOnly: true })),
             rowHeaders: true,
             readOnly: true,
             wordWrap: false,
             manualColumnResize: true,
             width: container.clientWidth,
-            height: Math.min(Math.max(180, panelHeight - 90), 34 + 25 * rows.length),
-            modifyColWidth: function(width) {
-                if (width > 240) return 240;
-            }
+            height: getGridHeight(),
+            colWidths: columns.map((_, col) => (col === 0 ? 220 : 160))
         });
     }
 
     /**
-     * Returns the export file name without extension: "<site>-details-<date>".
+     * Adds one row to the grid without rebuilding it. The view follows the new row only when
+     * it was already showing the last rows.
+     * @param {Object} result - New result.
+     */
+    function appendGridRow(result) {
+        const template = getSelectedTemplate();
+        if (!state.grid || !template) {
+            rebuildGridIfNeeded();
+            return;
+        }
+        const holder = $id("detailsHot").querySelector(".ht_master .wtHolder");
+        const atBottom = !holder || holder.scrollTop + holder.clientHeight >= holder.scrollHeight - 30;
+        state.gridData.push(toGridRow(template, result));
+        state.grid.render();
+        if (atBottom) state.grid.scrollViewportTo(state.gridData.length - 1, 0);
+    }
+
+    /**
+     * Handles the rename and "show in page" buttons of the column headers.
+     * @param {MouseEvent} event - Mouse event in the grid.
+     */
+    function onGridHeaderAction(event) {
+        const button = event.target instanceof Element ? event.target.closest("[data-col-action]") : null;
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type !== "click") return;
+        const template = getSelectedTemplate();
+        if (!template) return;
+        const col = parseInt(button.dataset.col, 10);
+        const field = col > 0 ? template.fields[col - 1] : null;
+        if (button.dataset.colAction === "rename") {
+            const current = getResultColumns(template)[col];
+            openPrompt("detailsColumnPrompt", "Column name", current, "Save", name => {
+                if (!name) return;
+                updateTemplate(template.id, t => { t.renames[field ? field.id : "url"] = name.slice(0, 120); });
+            });
+        } else if (field) {
+            showFieldInPage(field);
+        }
+    }
+
+    /**
+     * Highlights the element of a field in the target tab for a moment.
+     * @param {Object} field - Field.
+     */
+    async function showFieldInPage(field) {
+        await focusTargetTab();
+        const response = await sendToTab({ action: "detailsShowField", field: { kind: field.kind, selectors: field.selectors }, durationMs: SHOW_FIELD_MS });
+        if (response) connectSessionPort();
+        if (!response || !response.found) {
+            showMessage("detailsExportMessage", "Not found in the page shown in the tab.", "warning");
+        } else {
+            showMessage("detailsExportMessage", "");
+        }
+    }
+
+    // --- Exports ---
+
+    /**
+     * Returns the export file name without extension: "<template name>-YYYY-MM-DD".
      * @returns {string} File name base.
      */
     function getExportFileBase() {
-        let site = "page";
-        try {
-            const hostname = new URL(state.sampleUrls[0] || getSampleUrl()).hostname;
-            const parts = hostname.split(".");
-            if (/^[\d.]+$/.test(hostname) || hostname.indexOf(":") > -1) {
-                // IP address: keep all of it
-                site = hostname.replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "") || "page";
-            } else {
-                site = parts[0].indexOf("www") > -1 && parts[1] ? parts[1] : parts[0];
-            }
-        } catch (error) {
-            site = "page";
-        }
-        return site + "-details-" + new Date().toISOString().slice(0, 10);
+        const template = getSelectedTemplate();
+        const now = new Date();
+        const pad = n => String(n).padStart(2, "0");
+        const date = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+        return toFileName(template ? template.name : "page-details") + "-" + date;
     }
 
     /**
@@ -966,154 +1792,77 @@
             helpers.exportXlsx(table, getExportFileBase() + ".xlsx", "Page details");
         } else {
             helpers.copyTsv(table);
-            showMessage("detailsExportMessage", "Copied " + table.data.length + (table.data.length === 1 ? " row" : " rows") + " to the clipboard.");
+            showMessage("detailsExportMessage", "Copied " + plural(table.data.length, "row") + " to the clipboard.");
         }
-    }
-
-    // --- Saved field sets ---
-
-    /**
-     * Returns the hostname (without www.) of the sample page.
-     * @returns {string} Hostname, or "".
-     */
-    function getSampleHost() {
-        try {
-            return new URL(getSampleUrl()).hostname.replace(/^www\./, "");
-        } catch (error) {
-            return "";
-        }
-    }
-
-    /**
-     * Reads the saved field sets.
-     * @returns {Promise<Object>} Field sets by hostname.
-     */
-    async function readFieldSets() {
-        try {
-            const stored = await chromeInstance.storage.local.get(FIELD_SETS_KEY);
-            const sets = stored && stored[FIELD_SETS_KEY];
-            return sets && typeof sets === "object" ? sets : {};
-        } catch (error) {
-            return {};
-        }
-    }
-
-    /**
-     * Returns the valid fields of a saved set.
-     * @param {Object} set - Saved set.
-     * @returns {Array<{name: string, kind: string, selectors: string[]}>} Fields.
-     */
-    function getSavedFields(set) {
-        if (!set || !Array.isArray(set.fields)) return [];
-        return set.fields.filter(field => field && KIND_LABELS[field.kind] &&
-            Array.isArray(field.selectors) && field.selectors.length &&
-            field.selectors.every(selector => typeof selector === "string"));
-    }
-
-    /**
-     * Shows the saved field set of the sample page's site, if any, with Use and Delete.
-     */
-    async function refreshSavedBar() {
-        const host = getSampleHost();
-        const fields = host ? getSavedFields((await readFieldSets())[host]) : [];
-        $id("detailsSavedBar").hidden = !fields.length;
-        if (fields.length) {
-            $id("detailsSavedText").textContent = "Saved fields for " + host + ": " +
-                fields.map(field => field.name).join(", ");
-            $id("detailsSavedText").title = $id("detailsSavedText").textContent;
-        }
-    }
-
-    /**
-     * Saves the current fields for the sample page's site (replaces the previous set).
-     */
-    async function saveFieldSet() {
-        const host = getSampleHost();
-        if (!host || !state.fields.length) return;
-        const sets = await readFieldSets();
-        sets[host] = {
-            fields: state.fields.map(field => ({ name: field.name, kind: field.kind, selectors: field.selectors.slice() })),
-            savedAt: new Date().toISOString()
-        };
-        try {
-            await chromeInstance.storage.local.set({ [FIELD_SETS_KEY]: sets });
-            showMessage("detailsPickMessage", "Fields saved for " + host + ".");
-        } catch (error) {
-            showMessage("detailsPickMessage", "Unable to save the fields: " + (error && error.message || error), "error");
-        }
-        refreshSavedBar();
-    }
-
-    /**
-     * Replaces the current fields with the saved set of the sample page's site.
-     */
-    async function useSavedFieldSet() {
-        if (isBusy()) return;
-        const host = getSampleHost();
-        const fields = getSavedFields((await readFieldSets())[host]);
-        if (!fields.length) return;
-        state.fields = [];
-        resetResults();
-        addFields(fields.map(field => ({ name: field.name, kind: field.kind, selectors: field.selectors, sample: "" })));
-        showMessage("detailsPickMessage", "Saved fields of " + host + " loaded.");
-    }
-
-    /**
-     * Deletes the saved field set of the sample page's site.
-     */
-    async function deleteSavedFieldSet() {
-        const host = getSampleHost();
-        const sets = await readFieldSets();
-        if (!host || !(host in sets)) return;
-        delete sets[host];
-        try {
-            await chromeInstance.storage.local.set({ [FIELD_SETS_KEY]: sets });
-        } catch (error) {
-            console.error("Unable to delete the saved fields:", error);
-        }
-        refreshSavedBar();
     }
 
     // --- Wiring ---
 
     $id("tabList").addEventListener("click", () => setMode("list"));
     $id("tabDetails").addEventListener("click", () => setMode("details"));
+    document.querySelectorAll(".osd-stepper-item").forEach(item => {
+        item.addEventListener("click", () => showStep(parseInt(item.dataset.step, 10)));
+    });
 
     document.querySelectorAll(".osd-seg[data-source]").forEach(button => {
-        button.addEventListener("click", () => setSource(button.dataset.source));
+        button.addEventListener("click", () => {
+            state.sourceChosen = true;
+            setSource(button.dataset.source);
+        });
     });
     $id("detailsCsvFile").addEventListener("change", event => loadCsvSource(event.target.files[0]));
     $id("detailsPasteUrls").addEventListener("input", loadPasteSource);
-    $id("detailsUrlColumn").addEventListener("change", () => applyColumn(""));
+    $id("detailsUrlColumn").addEventListener("change", applyColumn);
+    $id("detailsToStep2").addEventListener("click", () => showStep(2));
 
-    $id("detailsSamplePrev").addEventListener("click", () => moveSample(-1));
-    $id("detailsSampleNext").addEventListener("click", () => moveSample(1));
+    $id("detailsTestPrev").addEventListener("click", () => moveTestUrl(-1));
+    $id("detailsTestNext").addEventListener("click", () => moveTestUrl(1));
+    $id("detailsTemplate").addEventListener("change", event => selectTemplate(event.target.value));
+    $id("detailsTemplateMenuButton").addEventListener("click", event => {
+        event.stopPropagation();
+        toggleTemplateMenu($id("detailsTemplateMenu").hidden);
+    });
+    [["detailsTemplateRename", "rename"], ["detailsTemplateExport", "export"], ["detailsTemplateImport", "import"], ["detailsTemplateDelete", "delete"]]
+        .forEach(([id, action]) => $id(id).addEventListener("click", () => onTemplateMenuAction(action)));
+    document.addEventListener("click", event => {
+        if (!$id("detailsTemplateMenu").hidden && !event.target.closest(".osd-menu-wrap")) closeTemplateMenu();
+    });
+    document.addEventListener("keydown", event => {
+        if (event.key === "Escape") {
+            closeTemplateMenu();
+            closePrompt("detailsTemplatePrompt");
+            closePrompt("detailsColumnPrompt");
+        }
+    });
+    $id("detailsTemplateFile").addEventListener("change", event => importTemplate(event.target.files[0]));
+    $id("detailsTemplatePromptCancel").addEventListener("click", () => closePrompt("detailsTemplatePrompt"));
+    $id("detailsColumnPromptCancel").addEventListener("click", () => closePrompt("detailsColumnPrompt"));
     $id("detailsPickStart").addEventListener("click", startPicking);
     $id("detailsPickStop").addEventListener("click", finishPicking);
+    $id("detailsBackTo1").addEventListener("click", () => showStep(1));
+    $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
-    $id("detailsMinDelay").addEventListener("change", () => linkDelays("min"));
-    $id("detailsMaxDelay").addEventListener("change", () => linkDelays("max"));
-    $id("detailsStart").addEventListener("click", startRun);
-    $id("detailsStop").addEventListener("click", stopRun);
-
-    $id("detailsSaveFields").addEventListener("click", saveFieldSet);
-    $id("detailsUseSaved").addEventListener("click", useSavedFieldSet);
-    $id("detailsDeleteSaved").addEventListener("click", deleteSavedFieldSet);
-    chromeInstance.storage.onChanged.addListener((changes, area) => {
-        if (area === "local" && changes[FIELD_SETS_KEY]) refreshSavedBar();
-    });
+    $id("detailsShowTab").addEventListener("click", focusTargetTab);
+    $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
+    $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
+    $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
+    ["mousedown", "click"].forEach(type => $id("detailsHot").addEventListener(type, onGridHeaderAction, true));
 
     $id("detailsCsv").addEventListener("click", () => exportResults("csv"));
     $id("detailsXlsx").addEventListener("click", () => exportResults("xlsx"));
     $id("detailsCopy").addEventListener("click", () => exportResults("copy"));
 
-    // When no URL list is set, the sample page follows the target tab
-    chromeInstance.tabs.onUpdated.addListener((tabId, changeInfo) => {
-        if (tabId === targetTabId && changeInfo.url && !state.sampleUrls.length) updateSampleUi();
+    chromeInstance.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local" || !changes[TEMPLATES_KEY]) return;
+        const list = Array.isArray(changes[TEMPLATES_KEY].newValue) ? changes[TEMPLATES_KEY].newValue : [];
+        state.templates = list.map(sanitizeTemplate).filter(Boolean);
+        onTemplatesChanged();
     });
 
     window.addEventListener("resize", () => {
-        if (document.body.classList.contains(DETAILS_MODE_CLASS)) renderResultsGrid();
+        if (state.grid && state.step === 3) {
+            state.grid.updateSettings({ width: $id("detailsHot").clientWidth, height: getGridHeight() });
+        }
     });
 
     // The window holds the results in memory only: confirm before closing it during a run
@@ -1124,8 +1873,11 @@
         }
     });
 
-    renderFieldList();
+    readTemplates().then(templates => {
+        state.templates = templates;
+        onTemplatesChanged();
+    });
+    setSource("csv");
+    showStep(1);
     updateBusyUi();
-    onResultsChanged();
-    setSource("list");
 })();

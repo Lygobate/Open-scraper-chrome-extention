@@ -457,8 +457,9 @@
     var MEDIA_ELEMENTS = "img, video, audio";
     // Media inside a hovered element that are compared with its box (large containers hold many)
     var MAX_MEDIA_CANDIDATES = 24;
-    // Port opened by the scraping window while picking: picking ends when the window goes away
-    var PICKER_PORT_NAME = "openscraper-details-picker";
+    // Port kept open by the scraping window while it uses the page: when the window goes away,
+    // the picker, highlights and overlay it left are removed
+    var DETAILS_PORT_NAME = "openscraper-details-session";
     // Attribute of the element that hosts everything this extension draws in the page
     var LAYER_ATTRIBUTE = "data-openscraper-layer";
     // Space between a highlighted element and its info label, and between the label and the window edges
@@ -1658,7 +1659,7 @@
     // the picker, highlights and overlay it left are removed
     var detailsPorts = [];
     chrome.runtime.onConnect.addListener(function(port) {
-        if (port.name !== PICKER_PORT_NAME) return;
+        if (port.name !== DETAILS_PORT_NAME) return;
         detailsPorts.push(port);
         port.onDisconnect.addListener(function() {
             detailsPorts = detailsPorts.filter(function(other) { return other !== port; });

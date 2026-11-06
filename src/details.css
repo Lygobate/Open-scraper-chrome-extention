@@ -65,7 +65,7 @@
     z-index: 1000;
     overflow-x: hidden;
     overflow-y: auto;
-    padding: 10px 12px 12px;
+    padding: 12px 16px 16px;
     background: linear-gradient(160deg, var(--bg-deep) 0%, var(--bg-surface) 100%);
 }
 
@@ -81,37 +81,97 @@ body.mode-details .details-panel {
     display: none !important;
 }
 
-/* === STEPS === */
+/* === STEPPER === */
 
-.osd-step {
-    margin-bottom: 10px;
-    padding: 10px 12px;
-    background: var(--bg-glass);
-    border: 1px solid var(--border-glass);
-    border-radius: var(--radius-md);
+.osd-stepper {
+    display: flex;
+    gap: var(--space-xs);
+    margin: 0 0 12px;
+    padding: 0;
+    list-style: none;
 }
 
-.osd-step-title {
+.osd-stepper li {
+    flex: 1 1 0;
+}
+
+.osd-stepper-item {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    margin: 0 0 8px;
+    width: 100%;
+    height: 34px;
+    padding: 0 10px;
     font-family: var(--font-family);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid var(--border-glass);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.osd-stepper-item:hover:not(:disabled) {
     color: var(--text-primary);
+}
+
+.osd-stepper-item:disabled {
+    cursor: default;
+}
+
+.osd-stepper-item.is-done {
+    color: var(--text-secondary);
+    border-bottom-color: rgba(6, 182, 212, 0.35);
+}
+
+.osd-stepper-item.is-active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-teal);
+}
+
+.osd-stepper-item:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.3);
 }
 
 .osd-step-num {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 20px;
     width: 20px;
     height: 20px;
     font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--bg-glass-hover);
+    border-radius: var(--radius-full);
+}
+
+.osd-stepper-item.is-active .osd-step-num,
+.osd-stepper-item.is-done .osd-step-num {
     color: var(--accent-teal);
     background: var(--accent-teal-dim);
-    border-radius: var(--radius-full);
+}
+
+/* === STEPS === */
+
+.osd-step {
+    padding: 14px 16px 16px;
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+    animation: fadeIn var(--transition-base);
+}
+
+.osd-step-title {
+    margin: 0 0 12px;
+    font-family: var(--font-family);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
 .osd-row {
@@ -119,7 +179,14 @@ body.mode-details .details-panel {
     align-items: center;
     flex-wrap: wrap;
     gap: var(--space-sm);
-    margin-top: 8px;
+    margin-top: 10px;
+}
+
+.osd-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-top: 16px;
 }
 
 .osd-grow {
@@ -131,6 +198,10 @@ body.mode-details .details-panel {
     margin: 0;
     font-weight: 500;
     color: var(--text-secondary);
+}
+
+.osd-label-fixed {
+    flex: 0 0 72px;
 }
 
 .osd-hint {
@@ -175,6 +246,7 @@ body.mode-details .details-panel {
 
 .osd-btn:focus-visible,
 .osd-seg:focus-visible,
+.osd-menu-item:focus-visible,
 .osd-input:focus,
 .osd-select:focus,
 .osd-textarea:focus {
@@ -187,21 +259,45 @@ body.mode-details .details-panel {
     cursor: not-allowed;
 }
 
-.osd-btn-primary {
-    color: var(--accent-teal);
-    background: var(--accent-teal-dim);
-    border-color: rgba(6, 182, 212, 0.35);
+.osd-btn-lg {
+    height: 36px;
+    padding: 0 18px;
 }
 
-.osd-btn-primary:hover:not(:disabled) {
-    background: rgba(6, 182, 212, 0.25);
+.osd-btn-xl {
+    height: 44px;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.osd-btn-block {
+    display: flex;
+    width: 100%;
+    margin-top: 12px;
+}
+
+.osd-btn-primary {
+    color: var(--text-inverse);
+    background: var(--accent-teal);
     border-color: var(--accent-teal);
 }
 
-.osd-btn-danger {
-    color: var(--accent-rose);
-    background: var(--accent-rose-dim);
-    border-color: rgba(244, 63, 94, 0.35);
+.osd-btn-primary:hover:not(:disabled) {
+    background: #22d3ee;
+    border-color: #22d3ee;
+}
+
+.osd-btn-danger,
+.osd-btn-primary.osd-btn-danger {
+    color: #fff;
+    background: var(--accent-rose);
+    border-color: var(--accent-rose);
+}
+
+.osd-btn-danger:hover:not(:disabled),
+.osd-btn-primary.osd-btn-danger:hover:not(:disabled) {
+    background: #fb7185;
+    border-color: #fb7185;
 }
 
 .osd-btn-success {
@@ -211,6 +307,7 @@ body.mode-details .details-panel {
 }
 
 .osd-btn-icon {
+    flex: 0 0 30px;
     width: 30px;
     padding: 0;
     font-size: 18px;
@@ -226,8 +323,8 @@ body.mode-details .details-panel {
 }
 
 .osd-seg {
-    height: 26px;
-    padding: 0 12px;
+    height: 28px;
+    padding: 0 14px;
     font-family: var(--font-family);
     font-size: 12px;
     font-weight: 500;
@@ -267,7 +364,7 @@ body.mode-details .details-panel {
 }
 
 .osd-select {
-    max-width: 260px;
+    max-width: 320px;
 }
 
 .osd-select option {
@@ -279,13 +376,13 @@ body.mode-details .details-panel {
     display: block;
     width: 100%;
     height: auto;
-    margin-top: 8px;
+    margin-top: 10px;
     padding: 6px 8px;
     resize: vertical;
 }
 
 .osd-number {
-    width: 56px;
+    width: 60px;
 }
 
 .osd-inline-input {
@@ -297,27 +394,158 @@ body.mode-details .details-panel {
     color: var(--text-secondary);
 }
 
-.osd-file {
-    margin-top: 8px;
-    font-size: 12px;
+.osd-file-drop {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 56px;
+    margin: 10px 0 0;
+    font-weight: 500;
     color: var(--text-secondary);
-}
-
-.osd-file::file-selector-button {
-    margin-right: 8px;
-    padding: 4px 10px;
-    font-family: var(--font-family);
-    color: var(--text-primary);
-    background: var(--bg-glass-hover);
-    border: 1px solid var(--border-glass-hover);
+    background: var(--bg-deep);
+    border: 1px dashed var(--border-glass-active);
     border-radius: var(--radius-sm);
     cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.osd-file-drop:hover,
+.osd-file-drop:focus-within {
+    color: var(--accent-teal);
+    border-color: var(--accent-teal);
+}
+
+.osd-file-drop input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.osd-file-drop-text {
+    overflow: hidden;
+    max-width: 90%;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* === URL PREVIEW LIST === */
+
+.osd-url-list {
+    max-height: 210px;
+    margin: 10px 0 0;
+    padding: 4px 0;
+    overflow-y: auto;
+    list-style: none;
+    counter-reset: url;
+    background: var(--bg-deep);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
+}
+
+.osd-url-list li {
+    display: flex;
+    gap: var(--space-sm);
+    padding: 2px 10px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.osd-url-num {
+    flex: 0 0 34px;
+    text-align: right;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.osd-url-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.osd-url-list li.is-skipped .osd-url-value {
+    color: var(--text-muted);
+    text-decoration: line-through;
+}
+
+.osd-url-list li.osd-url-more {
+    color: var(--text-muted);
+}
+
+/* === TEMPLATE MENU AND INLINE PROMPTS === */
+
+.osd-menu-wrap {
+    position: relative;
+}
+
+.osd-menu {
+    position: absolute;
+    top: 34px;
+    right: 0;
+    z-index: 20;
+    min-width: 170px;
+    padding: 4px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+}
+
+.osd-menu-item {
+    display: block;
+    width: 100%;
+    padding: 6px 10px;
+    font-family: var(--font-family);
+    font-size: 13px;
+    text-align: left;
+    color: var(--text-primary);
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.osd-menu-item:hover:not(:disabled) {
+    background: var(--bg-glass-hover);
+}
+
+.osd-menu-item:disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+}
+
+.osd-menu-danger:not(:disabled) {
+    color: var(--accent-rose);
+}
+
+.osd-prompt {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border-glass-hover);
+    border-radius: var(--radius-sm);
+}
+
+.osd-prompt-label {
+    margin: 0;
+    font-weight: 500;
+    color: var(--text-secondary);
+    white-space: nowrap;
 }
 
 /* === MESSAGES === */
 
 .osd-message {
-    margin-top: 8px;
+    margin-top: 10px;
     padding: 6px 10px;
     font-size: 12px;
     color: var(--accent-teal);
@@ -335,29 +563,83 @@ body.mode-details .details-panel {
     background: var(--accent-rose-dim);
 }
 
-/* === FIELD LIST === */
+/* === PREVIEW === */
 
-.osd-field-list {
-    margin: 8px 0 0;
-    padding: 0;
-    list-style: none;
+.osd-preview {
+    margin-top: 12px;
+    overflow: hidden;
+    background: var(--bg-deep);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
 }
 
-.osd-field {
+.osd-preview-head {
     display: flex;
     align-items: center;
-    gap: var(--space-sm);
-    padding: 4px 0;
+    justify-content: space-between;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-glass);
+}
+
+.osd-preview-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.osd-preview-table td {
+    padding: 5px 10px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    vertical-align: middle;
     border-top: 1px solid var(--border-glass);
 }
 
-.osd-field:first-child {
+.osd-preview-table tr:first-child td {
     border-top: none;
 }
 
+.osd-preview-kind {
+    width: 76px;
+}
+
+.osd-preview-name {
+    width: 32%;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.osd-preview-value {
+    color: var(--text-secondary);
+}
+
+.osd-preview-value.is-missing {
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+.osd-preview-table td.osd-preview-remove {
+    width: 44px;
+    padding: 3px 8px 3px 0;
+    text-overflow: clip;
+    text-align: right;
+}
+
+.osd-preview-remove .osd-btn {
+    width: 24px;
+    height: 24px;
+    font-size: 15px;
+}
+
 .osd-kind {
-    flex: 0 0 44px;
-    padding: 2px 0;
+    display: inline-block;
+    min-width: 44px;
+    padding: 1px 6px;
     font-size: 11px;
     font-weight: 600;
     text-align: center;
@@ -376,97 +658,118 @@ body.mode-details .details-panel {
     background: var(--accent-amber-dim);
 }
 
-.osd-field-name {
-    flex: 0 0 170px;
-    height: 26px;
+/* === EXTRACT STEP === */
+
+.osd-run-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
 }
 
-.osd-field-sample {
-    flex: 1 1 auto;
+.osd-run-title {
     min-width: 0;
+}
+
+.osd-run-name {
+    margin: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+    font-family: var(--font-family);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.osd-run-domain {
     font-size: 12px;
     color: var(--text-muted);
 }
 
-.osd-field-remove {
-    width: 26px;
-    height: 26px;
-    font-size: 16px;
+.osd-counters {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-sm);
+    margin-top: 12px;
 }
 
-/* === PROGRESS === */
-
-.osd-progress {
-    margin-top: 10px;
-}
-
-.osd-progress-track {
-    height: 6px;
-    overflow: hidden;
+.osd-counter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 6px;
     background: var(--bg-deep);
-    border-radius: var(--radius-full);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
 }
 
-.osd-progress-bar {
-    width: 0;
-    height: 100%;
-    background: var(--accent-teal);
-    border-radius: var(--radius-full);
-    transition: width var(--transition-base);
+.osd-counter-value {
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
 }
 
-.osd-progress-text {
-    margin-top: 6px;
+.osd-counter-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+
+.osd-options {
+    margin-top: 10px;
     font-size: 12px;
     color: var(--text-secondary);
 }
 
-.osd-progress-url {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    font-size: 12px;
-    color: var(--text-muted);
+.osd-options summary {
+    width: max-content;
+    font-weight: 500;
+    cursor: pointer;
 }
 
-/* === SAVED FIELDS === */
-
-.osd-saved {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    margin-top: 8px;
-    padding: 6px 8px 6px 10px;
-    background: var(--accent-emerald-dim);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    border-radius: var(--radius-sm);
+.osd-options summary:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.3);
 }
-
-.osd-saved-text {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    font-size: 12px;
-    color: var(--accent-emerald);
-}
-
-/* === RESULTS === */
 
 .osd-results-head {
-    margin-top: 0;
-}
-
-.osd-results-head .osd-step-title {
-    margin: 0;
+    margin-top: 14px;
 }
 
 .osd-hot {
     margin-top: 8px;
     overflow: hidden;
     border-radius: var(--radius-sm);
+}
+
+.osd-hot .osd-col-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    justify-content: center;
+}
+
+.osd-hot .osd-col-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.osd-hot .osd-col-action {
+    padding: 0 3px;
+    font-size: 11px;
+    line-height: 16px;
+    color: inherit;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    opacity: 0.55;
+    cursor: pointer;
+}
+
+.osd-hot .osd-col-action:hover {
+    opacity: 1;
+    border-color: currentColor;
 }
