@@ -1188,7 +1188,66 @@
     }
 
     /**
-     * Places every box over its element, in page coordinates (boxes follow the page when it scrolls).
+     * Tells whether the body is a box of its own. The body's overflow applies to the window
+     * unless the root element sets its own: then pages use the body as their scroller.
+     * @returns {boolean} True when the body scrolls or clips on its own.
+     */
+    function isBodyOwnBox() {
+        return getComputedStyle(document.documentElement).overflowY !== "visible";
+    }
+
+    /**
+     * Returns the part of an element left visible by the boxes around it that clip their
+     * content (inner scroll boxes, overflow: hidden). The window is left out: boxes are drawn
+     * in page coordinates and follow it.
+     * @param {Element} element - Element.
+     * @param {DOMRect} rect - Its bounding box, in viewport coordinates.
+     * @returns {{left: number, top: number, width: number, height: number}|null} Visible part,
+     *     in viewport coordinates, or null when the element is clipped out.
+     */
+    function getVisiblePart(element, rect) {
+        var left = rect.left;
+        var top = rect.top;
+        var right = rect.right;
+        var bottom = rect.bottom;
+        var bodyOwnBox = isBodyOwnBox();
+        // An absolutely positioned element is only clipped by the boxes from its containing block up
+        var escaping = false;
+        var node = element;
+        while (node && node !== document.documentElement) {
+            var style = getComputedStyle(node);
+            var skip = false;
+            if (node !== element) {
+                var containsPositioned = style.position !== "static" || style.transform !== "none";
+                skip = escaping && !containsPositioned;
+                if (!skip) escaping = false;
+            }
+            if (!skip && node !== element && (node !== document.body || bodyOwnBox) &&
+                style.display !== "inline" && style.display !== "contents") {
+                var box = node.getBoundingClientRect();
+                if (style.overflowX !== "visible") {
+                    left = Math.max(left, box.left + node.clientLeft);
+                    right = Math.min(right, box.left + node.clientLeft + node.clientWidth);
+                }
+                if (style.overflowY !== "visible") {
+                    top = Math.max(top, box.top + node.clientTop);
+                    bottom = Math.min(bottom, box.top + node.clientTop + node.clientHeight);
+                }
+            }
+            if (!skip && style.position === "fixed") break;
+            if (!skip && style.position === "absolute") escaping = true;
+            node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+        }
+        var width = right - left;
+        var height = bottom - top;
+        if (width < 0 || height < 0 || (width === 0 && rect.width > 0) || (height === 0 && rect.height > 0)) return null;
+        return { left: left, top: top, width: width, height: height };
+    }
+
+    /**
+     * Places every box over the visible part of its element, in page coordinates (boxes follow
+     * the page when it scrolls). Parts scrolled out of an inner box are not drawn: drawn below
+     * the page, they would make the window scroll on pages where only that box scrolls.
      */
     function placeLayerBoxes() {
         if (!layer || !layerBoxes.length) return;
@@ -1203,12 +1262,13 @@
             }
             var rect = entry.element.getBoundingClientRect();
             var hidden = !entry.element.isConnected || (rect.width === 0 && rect.height === 0);
-            entry.box.style.display = hidden ? "none" : "block";
-            if (hidden) return;
-            entry.box.style.left = (rect.left - origin.left) + "px";
-            entry.box.style.top = (rect.top - origin.top) + "px";
-            entry.box.style.width = rect.width + "px";
-            entry.box.style.height = rect.height + "px";
+            var part = hidden ? null : getVisiblePart(entry.element, rect);
+            entry.box.style.display = part ? "block" : "none";
+            if (!part) return;
+            entry.box.style.left = (part.left - origin.left) + "px";
+            entry.box.style.top = (part.top - origin.top) + "px";
+            entry.box.style.width = part.width + "px";
+            entry.box.style.height = part.height + "px";
         });
     }
 
@@ -1578,11 +1638,9 @@
             catcher.style.pointerEvents = "";
         }
         var documentScroller = document.scrollingElement || document.documentElement;
-        // The body's overflow applies to the window unless the root element sets its own:
-        // then the body is a box of its own, which pages use as their scroller
-        var bodyIsBox = getComputedStyle(document.documentElement).overflowY !== "visible";
+        var bodyOwnBox = isBodyOwnBox();
         while (element && element !== documentScroller && element !== document.documentElement) {
-            if ((element !== document.body || bodyIsBox) && element !== layer.host) {
+            if ((element !== document.body || bodyOwnBox) && element !== layer.host) {
                 var style = getComputedStyle(element);
                 var canY = dy && /^(auto|scroll|overlay)$/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1 &&
                     (dy > 0 ? element.scrollTop + element.clientHeight < element.scrollHeight - 1 : element.scrollTop > 0);
