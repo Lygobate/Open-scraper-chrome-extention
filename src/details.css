@@ -683,17 +683,63 @@ body.mode-details .details-panel {
     color: var(--accent-amber);
 }
 
-.osd-preview-table td.osd-preview-remove {
-    width: 44px;
+.osd-preview-table td.osd-preview-actions {
+    width: 92px;
     padding: 3px 8px 3px 0;
     text-overflow: clip;
     text-align: right;
 }
 
-.osd-preview-remove .osd-btn {
+.osd-preview-actions .osd-btn {
     width: 24px;
     height: 24px;
+    margin-left: 2px;
+    font-size: 13px;
+}
+
+.osd-preview-actions .osd-remove {
     font-size: 15px;
+}
+
+/* Drag handle of a field: the URL column has none (it stays first) */
+.osd-preview-table td.osd-preview-handle {
+    width: 22px;
+    padding: 0 0 0 6px;
+    text-overflow: clip;
+}
+
+.osd-drag-handle {
+    display: inline-block;
+    padding: 2px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text-muted);
+    cursor: grab;
+    user-select: none;
+}
+
+.osd-drag-handle:hover {
+    color: var(--accent-teal);
+}
+
+.osd-preview-table tr.is-dragging td {
+    opacity: 0.45;
+}
+
+.osd-preview-table tr.is-drop-before td {
+    box-shadow: inset 0 2px 0 var(--accent-teal);
+}
+
+.osd-preview-table tr.is-drop-after td {
+    box-shadow: inset 0 -2px 0 var(--accent-teal);
+}
+
+.osd-preview-hint {
+    margin: 0;
+    padding: 5px 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-glass);
 }
 
 .osd-kind {

@@ -87,7 +87,11 @@
         pickToken: 0,
         picks: [],
         pickTemplateId: "",
+        // Values read in the test page by field id, and the template they were read for
         previewValues: null,
+        previewTemplateId: "",
+        // Field being dragged in the fields list of step 2
+        dragFieldId: "",
         renaming: false,
         previewUrl: "",
         filledCounts: null,
@@ -1027,11 +1031,8 @@
         renderTemplateSelect();
         updateFieldsStepUi();
         const template = getSelectedTemplate();
-        if (state.step === 2 && template && !$id("detailsPreview").hidden) {
-            // Names may have changed (here, in the grid or in another window)
-            const values = state.previewValues && state.previewValues.length === template.fields.length ? state.previewValues : null;
-            if (values || !state.previewValues) renderPreviewRows(template, values);
-        }
+        // Names or order may have changed (here, in the grid or in another window)
+        if (state.step === 2 && template) redrawPreview();
         if (state.step === 3) renderRunHeader();
         rebuildGridIfNeeded();
     }
@@ -1473,7 +1474,12 @@
             const complete = found === template.fields.length;
             $id("detailsPreviewStatus").textContent = found + " / " + template.fields.length + " found" +
                 (complete || waitMs ? "" : " · waiting for the others…");
-            renderPreviewRows(template, response.values);
+            // Kept by field id: the fields may be moved meanwhile
+            const values = {};
+            template.fields.forEach((field, i) => { values[field.id] = response.values[i] || ""; });
+            state.previewValues = values;
+            state.previewTemplateId = template.id;
+            redrawPreview();
             if (complete) return;
         }
     }
@@ -1505,20 +1511,65 @@
     }
 
     /**
-     * Draws the preview table: the URL column, then one row per field with its kind, column
-     * name (renamable), value read in the test page and a remove button. Not redrawn while a
-     * name is being edited (it is drawn again when the edit ends).
+     * Draws the preview again with the values already read, when they cover every field of the
+     * selected template (else it waits for the next read).
+     */
+    function redrawPreview() {
+        const template = getSelectedTemplate();
+        if (!template || $id("detailsPreview").hidden) return;
+        const values = state.previewValues;
+        const usable = !!values && state.previewTemplateId === template.id && template.fields.every(field => field.id in values);
+        if (usable || !values) renderPreviewRows(template, usable ? values : null);
+    }
+
+    /**
+     * Draws the preview table: the URL column, then one row per field with a drag handle, its
+     * kind, column name (renamable), value read in the test page, and buttons to move it up or
+     * down and to remove it. Not redrawn while a name is being edited or a field dragged (it is
+     * drawn again when that ends).
      * @param {Object} template - Template.
-     * @param {string[]|null} values - Values, or null while loading.
+     * @param {Object<string, string>|null} values - Values by field id, or null while loading.
      */
     function renderPreviewRows(template, values) {
         state.previewValues = values;
-        if (state.renaming) return;
+        state.previewTemplateId = template.id;
+        if (state.renaming || state.dragFieldId) return;
+        const busy = isBusy();
+        const count = template.fields.length;
         const body = $id("detailsPreviewBody");
         body.textContent = "";
+        $id("detailsPreviewHint").hidden = count < 2 || busy;
         const columns = getResultColumns(template);
-        const addRow = (kindKey, kindLabel, key, name, value, missing, field) => {
+        const addButton = (cell, text, title, label, disabled, onClick) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "osd-btn osd-btn-icon";
+            button.textContent = text;
+            button.title = title;
+            button.setAttribute("aria-label", label);
+            button.disabled = disabled;
+            button.addEventListener("click", onClick);
+            cell.appendChild(button);
+            return button;
+        };
+        const addRow = (kindKey, kindLabel, key, name, value, missing, field, index) => {
             const row = document.createElement("tr");
+            const handleCell = document.createElement("td");
+            handleCell.className = "osd-preview-handle";
+            if (field) {
+                row.dataset.fieldId = field.id;
+                if (count > 1 && !busy) {
+                    const handle = document.createElement("span");
+                    handle.className = "osd-drag-handle";
+                    handle.textContent = "⠿";
+                    handle.draggable = true;
+                    handle.title = "Drag to change the column order";
+                    handleCell.appendChild(handle);
+                }
+            } else {
+                handleCell.title = "The URL column stays first";
+            }
+
             const kindCell = document.createElement("td");
             kindCell.className = "osd-preview-kind";
             const kind = document.createElement("span");
@@ -1538,7 +1589,7 @@
             rename.textContent = "✎";
             rename.title = "Rename this column";
             rename.setAttribute("aria-label", "Rename column " + name);
-            rename.disabled = isBusy();
+            rename.disabled = busy;
             rename.addEventListener("click", () => startRename(nameCell, template.id, key, name));
             nameCell.append(nameText, rename);
 
@@ -1547,27 +1598,120 @@
             valueCell.textContent = values === null ? "…" : (missing ? "Not found" : value);
             valueCell.title = value;
 
-            const removeCell = document.createElement("td");
-            removeCell.className = "osd-preview-remove";
+            const actionsCell = document.createElement("td");
+            actionsCell.className = "osd-preview-actions";
             if (field) {
-                const remove = document.createElement("button");
-                remove.type = "button";
-                remove.className = "osd-btn osd-btn-icon";
-                remove.textContent = "×";
-                remove.title = "Remove this field from the template";
-                remove.setAttribute("aria-label", "Remove field " + name);
-                remove.disabled = isBusy();
-                remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
-                removeCell.appendChild(remove);
+                addButton(actionsCell, "↑", "Move up", "Move " + name + " up", busy || index === 0,
+                    () => moveFieldByButton(template.id, field.id, -1)).dataset.move = "up";
+                addButton(actionsCell, "↓", "Move down", "Move " + name + " down", busy || index === count - 1,
+                    () => moveFieldByButton(template.id, field.id, 1)).dataset.move = "down";
+                addButton(actionsCell, "×", "Remove this field from the template", "Remove field " + name, busy,
+                    () => removeTemplateField(template.id, field.id)).classList.add("osd-remove");
             }
-            row.append(kindCell, nameCell, valueCell, removeCell);
+            row.append(handleCell, kindCell, nameCell, valueCell, actionsCell);
             body.appendChild(row);
         };
-        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null);
+        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null, -1);
         template.fields.forEach((field, index) => {
-            const value = values ? values[index] || "" : "";
-            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field);
+            const value = values ? values[field.id] || "" : "";
+            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field, index);
         });
+    }
+
+    /**
+     * Returns the fields in a new order, or null when the move changes nothing.
+     * @param {Object[]} fields - Fields of a template.
+     * @param {string} fieldId - Field to move.
+     * @param {{by: number}|{nextTo: string, after: boolean}} target - Places to move it by, or the
+     *     field to put it before or after.
+     * @returns {Object[]|null} Fields in their new order.
+     */
+    function reorderFields(fields, fieldId, target) {
+        const from = fields.findIndex(field => field.id === fieldId);
+        if (from === -1) return null;
+        const rest = fields.filter(field => field.id !== fieldId);
+        let to;
+        if (target.nextTo) {
+            const index = rest.findIndex(field => field.id === target.nextTo);
+            if (index === -1) return null;
+            to = index + (target.after ? 1 : 0);
+        } else {
+            to = Math.max(0, Math.min(rest.length, from + target.by));
+        }
+        if (to === from) return null;
+        rest.splice(to, 0, fields[from]);
+        return rest;
+    }
+
+    /**
+     * Moves a field of a template. The order of the fields is the order of the result columns
+     * (the URL column stays first): the preview, the grid and the exports follow it, and the
+     * results already extracted keep their values (they are stored by field id).
+     * @param {string} templateId - Template id.
+     * @param {string} fieldId - Field to move.
+     * @param {{by: number}|{nextTo: string, after: boolean}} target - See reorderFields.
+     * @returns {Promise<boolean>} True when the new order was saved.
+     */
+    async function moveTemplateField(templateId, fieldId, target) {
+        const template = state.templates.find(t => t.id === templateId);
+        if (!template || isBusy() || !reorderFields(template.fields, fieldId, target)) return false;
+        return updateTemplate(templateId, t => {
+            const fields = reorderFields(t.fields, fieldId, target);
+            if (fields) t.fields = fields;
+        });
+    }
+
+    /**
+     * Moves a field one place with its arrow button, then puts the focus back on that button
+     * (or on the other arrow once the field reached the end).
+     * @param {string} templateId - Template id.
+     * @param {string} fieldId - Field to move.
+     * @param {number} by - -1 (up) or 1 (down).
+     */
+    async function moveFieldByButton(templateId, fieldId, by) {
+        await moveTemplateField(templateId, fieldId, { by: by });
+        const row = $id("detailsPreviewBody").querySelector('tr[data-field-id="' + CSS.escape(fieldId) + '"]');
+        if (!row) return;
+        const same = row.querySelector('[data-move="' + (by < 0 ? "up" : "down") + '"]');
+        const other = row.querySelector('[data-move="' + (by < 0 ? "down" : "up") + '"]');
+        (same && !same.disabled ? same : other).focus();
+    }
+
+    /**
+     * Returns where a dragged field would be dropped: before or after the row under the pointer
+     * (on the URL row: before the first field).
+     * @param {DragEvent} event - Drag event in the fields list.
+     * @returns {{row: HTMLElement, nextTo: string, after: boolean, line: string}|null} Target and
+     *     the side of the row to mark.
+     */
+    function getDropTarget(event) {
+        const template = getSelectedTemplate();
+        const row = event.target instanceof Element ? event.target.closest("#detailsPreviewBody tr") : null;
+        if (!row || !template || !template.fields.length) return null;
+        if (!row.dataset.fieldId) return { row: row, nextTo: template.fields[0].id, after: false, line: "after" };
+        const box = row.getBoundingClientRect();
+        const after = event.clientY > box.top + box.height / 2;
+        return { row: row, nextTo: row.dataset.fieldId, after: after, line: after ? "after" : "before" };
+    }
+
+    /**
+     * Removes the drop line from the fields list.
+     */
+    function clearDropLine() {
+        $id("detailsPreviewBody").querySelectorAll(".is-drop-before, .is-drop-after").forEach(row => {
+            row.classList.remove("is-drop-before", "is-drop-after");
+        });
+    }
+
+    /**
+     * Ends dragging a field and draws the list again (it is not redrawn during the drag).
+     */
+    function endFieldDrag() {
+        if (!state.dragFieldId) return;
+        state.dragFieldId = "";
+        clearDropLine();
+        $id("detailsPreviewBody").querySelectorAll(".is-dragging").forEach(row => row.classList.remove("is-dragging"));
+        redrawPreview();
     }
 
     /**
@@ -1620,8 +1764,7 @@
                 showMessage("detailsPickMessage", "");
             }
             state.renaming = false;
-            const template = getSelectedTemplate();
-            if (template) renderPreviewRows(template, state.previewValues);
+            redrawPreview();
         };
         input.addEventListener("keydown", event => {
             if (event.key === "Enter") {
@@ -2378,6 +2521,43 @@
     });
     $id("detailsEditFields").addEventListener("click", () => startPicking("edit"));
     $id("detailsPickStop").addEventListener("click", finishPicking);
+
+    // Fields list: drag a field by its handle to change the column order
+    const previewBody = $id("detailsPreviewBody");
+    previewBody.addEventListener("dragstart", event => {
+        const handle = event.target instanceof Element ? event.target.closest(".osd-drag-handle") : null;
+        const row = handle && handle.closest("tr");
+        if (!row || !row.dataset.fieldId || isBusy() || state.renaming) {
+            event.preventDefault();
+            return;
+        }
+        state.dragFieldId = row.dataset.fieldId;
+        row.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", row.dataset.fieldId);
+        event.dataTransfer.setDragImage(row, 12, row.offsetHeight / 2);
+    });
+    previewBody.addEventListener("dragover", event => {
+        const target = state.dragFieldId ? getDropTarget(event) : null;
+        if (!target) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        clearDropLine();
+        target.row.classList.add("is-drop-" + target.line);
+    });
+    previewBody.addEventListener("dragleave", event => {
+        if (!(event.relatedTarget instanceof Node && previewBody.contains(event.relatedTarget))) clearDropLine();
+    });
+    previewBody.addEventListener("drop", event => {
+        const fieldId = state.dragFieldId;
+        const target = fieldId ? getDropTarget(event) : null;
+        if (!fieldId) return;
+        event.preventDefault();
+        const template = getSelectedTemplate();
+        endFieldDrag();
+        if (target && template) moveTemplateField(template.id, fieldId, target);
+    });
+    previewBody.addEventListener("dragend", endFieldDrag);
     $id("detailsBackTo1").addEventListener("click", () => showStep(1));
     $id("detailsToStep3").addEventListener("click", () => showStep(3));
 
