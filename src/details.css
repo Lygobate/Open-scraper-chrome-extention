@@ -373,6 +373,24 @@ body.mode-details .details-panel {
     border-color: rgba(16, 185, 129, 0.35);
 }
 
+.osd-btn-accent {
+    color: var(--accent-teal);
+    background: var(--accent-teal-dim);
+    border-color: rgba(6, 182, 212, 0.35);
+}
+
+.osd-btn-accent:hover:not(:disabled) {
+    color: var(--text-inverse);
+    background: var(--accent-teal);
+    border-color: var(--accent-teal);
+}
+
+.osd-btn-warning {
+    color: var(--accent-amber);
+    background: var(--accent-amber-dim);
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
 .osd-btn-icon {
     flex: 0 0 30px;
     width: 30px;
@@ -635,6 +653,11 @@ body.mode-details .details-panel {
 .osd-message-error {
     color: var(--accent-rose);
     background: var(--accent-rose-dim);
+}
+
+.osd-message-success {
+    color: var(--accent-emerald);
+    background: var(--accent-emerald-dim);
 }
 
 /* === PREVIEW === */
