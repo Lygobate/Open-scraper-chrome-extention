@@ -1883,9 +1883,13 @@
     var MAX_FIELD_MATCHES = 20;
     // Interval between two checks of the fields while waiting for a page to show them
     var FIELD_CHECK_MS = 150;
-    // While fields are missing, the wait ends early once the page has not changed for this long
-    // (a page still drawing keeps changing; a field that is simply not on the page never comes)
+    // While fields are missing, the wait ends early once the page has loaded and has not changed
+    // for this long (a page still drawing keeps changing; a field that is simply not on the page
+    // never comes)
     var FIELD_QUIET_MS = 1500;
+    // A page still loading that already shows every field is read once their values have not
+    // changed for this long (a script may still be filling them in)
+    var FIELD_STABLE_MS = 500;
 
     /**
      * Finds the element and value of a field. The first match of each selector is tried in
@@ -1932,15 +1936,52 @@
     }
 
     /**
-     * Waits until every field has a value (pages that draw their content late), watching the
-     * page's changes, until the time runs out or, unless told otherwise, the page stops
-     * changing for FIELD_QUIET_MS. A page that already shows every field answers at once.
+     * Calls a function when the page changes (what this extension draws does not count) and
+     * at a regular interval (layout changes, like an image that loads, are not mutations), at
+     * most once per FIELD_CHECK_MS however many changes the page makes.
+     * @param {Function} onCheck - Called with the time of the last change of the page since the
+     *     previous call, or 0.
+     * @returns {Function} Stops watching.
+     */
+    function watchPage(onCheck) {
+        var scheduled = 0;
+        var changedAt = 0;
+        var lastRun = 0;
+        var run = function() {
+            scheduled = 0;
+            var at = changedAt;
+            changedAt = 0;
+            if (at) lastRun = Date.now();
+            onCheck(at);
+        };
+        var observer = new MutationObserver(function(records) {
+            var own = layer && records.every(function(record) {
+                return record.target === layer.host || Array.prototype.indexOf.call(record.addedNodes, layer.host) !== -1 ||
+                    Array.prototype.indexOf.call(record.removedNodes, layer.host) !== -1;
+            });
+            if (own) return;
+            changedAt = Date.now();
+            // The first change after a calm moment is checked at once, the next ones together
+            // (the regular checks do not count)
+            if (!scheduled) scheduled = setTimeout(run, Math.max(0, lastRun + FIELD_CHECK_MS - changedAt));
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+        var poll = setInterval(function() { if (!scheduled) run(); }, FIELD_CHECK_MS * 2);
+        return function() {
+            observer.disconnect();
+            clearInterval(poll);
+            clearTimeout(scheduled);
+        };
+    }
+
+    /**
+     * Waits until every field has a value (the preview of a page that draws its content late),
+     * or the time runs out. A page that already shows every field answers at once.
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
      * @param {number} timeoutMs - Longest wait.
-     * @param {boolean} [untilTimeout=false] - Ignore the quiet rule (one page, the preview).
      * @returns {Promise<boolean>} True when every field has a value.
      */
-    function waitForFields(fields, timeoutMs, untilTimeout) {
+    function waitForFields(fields, timeoutMs) {
         var allFound = function() {
             return fields.every(function(field) { return !!resolveField(field).value; });
         };
@@ -1948,38 +1989,106 @@
             if (!fields.length || allFound()) return resolve(true);
             if (!(timeoutMs > 0)) return resolve(false);
             var done = false;
-            var scheduled = 0;
             var finish = function(found) {
                 if (done) return;
                 done = true;
-                observer.disconnect();
-                clearInterval(poll);
+                stopWatching();
                 clearTimeout(timer);
-                clearTimeout(scheduled);
                 resolve(found);
             };
-            var lastChange = Date.now();
-            var check = function() {
-                scheduled = 0;
-                if (done) return;
-                if (allFound()) finish(true);
-                else if (!untilTimeout && Date.now() - lastChange >= FIELD_QUIET_MS) finish(false);
-            };
-            // Checks at most once per interval, however many changes the page makes. What this
-            // extension draws does not count as a change of the page.
-            var observer = new MutationObserver(function(records) {
-                var own = layer && records.every(function(record) {
-                    return record.target === layer.host || Array.prototype.indexOf.call(record.addedNodes, layer.host) !== -1 ||
-                        Array.prototype.indexOf.call(record.removedNodes, layer.host) !== -1;
-                });
-                if (own) return;
-                lastChange = Date.now();
-                if (!scheduled) scheduled = setTimeout(check, FIELD_CHECK_MS);
+            var stopWatching = watchPage(function() {
+                if (!done && allFound()) finish(true);
             });
-            observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
-            // Layout changes (an image that loads, a style that applies) are not mutations
-            var poll = setInterval(check, FIELD_CHECK_MS * 2);
             var timer = setTimeout(function() { finish(false); }, timeoutMs);
+        });
+    }
+
+    /**
+     * Waits until a page visited by a run can be read, watching it from the moment it is
+     * parsed (it may still be loading images, frames or ads):
+     * - never before notBeforeMs (the Min wait of the run), unless limitMs comes first;
+     * - every awaited field has a value: read at once when the page has loaded, else once the
+     *   values have not changed for FIELD_STABLE_MS;
+     * - a field still missing is waited for until the page has loaded, then until it has not
+     *   changed for FIELD_QUIET_MS or lateMs have passed, both counted from the end of the Min
+     *   wait or from the load, whichever comes last (so a page is never read earlier than when
+     *   it had loaded and Min had passed);
+     * - never beyond limitMs (the Max limit of the run).
+     * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
+     * @param {{notBeforeMs: number, lateMs: number, limitMs: number, awaited: boolean[]}} options -
+     *     Times in milliseconds from now; awaited tells, per field, whether a missing value holds
+     *     the page up (all of them when not given).
+     * @returns {Promise<{values: string[], complete: boolean, late: boolean[]}>} Values; complete
+     *     when every awaited field has one; late, per field, when its value only showed after the
+     *     first check.
+     */
+    function waitForRunFields(fields, options) {
+        var started = Date.now();
+        var minEnd = started + Math.max(0, Number(options.notBeforeMs) || 0);
+        var limitMs = Number(options.limitMs);
+        var hardEnd = started + (limitMs >= 0 ? limitMs : 30000);
+        var lateMs = Math.max(0, Number(options.lateMs) || 0);
+        var awaited = fields.map(function(field, i) { return !Array.isArray(options.awaited) || options.awaited[i] !== false; });
+        var readValues = function() { return extractPageDetails(fields); };
+        var values = readValues();
+        var missingAtStart = values.map(function(value) { return !value; });
+        var valuesKey = JSON.stringify(values);
+        var valuesChangedAt = started;
+        var lastChange = started;
+        var loadedAt = document.readyState === "complete" ? started : 0;
+        return new Promise(function(resolve) {
+            var done = false;
+            var wake = 0;
+            var stopWatching = null;
+            var onLoad = function() {
+                loadedAt = Date.now();
+                check(0);
+            };
+            var finish = function(complete) {
+                if (done) return;
+                done = true;
+                if (stopWatching) stopWatching();
+                clearTimeout(wake);
+                window.removeEventListener("load", onLoad);
+                values = readValues();
+                resolve({
+                    values: values,
+                    complete: complete,
+                    late: values.map(function(value, i) { return !!value && missingAtStart[i]; })
+                });
+            };
+            var check = function(changedAt) {
+                if (done) return;
+                var now = Date.now();
+                if (changedAt) lastChange = Math.max(lastChange, changedAt);
+                values = readValues();
+                var key = JSON.stringify(values);
+                if (key !== valuesKey) {
+                    valuesKey = key;
+                    valuesChangedAt = now;
+                }
+                var complete = values.every(function(value, i) { return !awaited[i] || !!value; });
+                if (now >= hardEnd) return finish(complete);
+                // Next moment a rule can end the wait without any change of the page
+                var next = hardEnd;
+                if (now < minEnd) {
+                    next = minEnd;
+                } else if (complete) {
+                    if (loadedAt || now - valuesChangedAt >= FIELD_STABLE_MS) return finish(true);
+                    next = valuesChangedAt + FIELD_STABLE_MS;
+                } else if (loadedAt) {
+                    var from = Math.max(minEnd, loadedAt);
+                    var quietEnd = Math.max(lastChange, from) + FIELD_QUIET_MS;
+                    var lateEnd = from + lateMs;
+                    if (now >= quietEnd || now >= lateEnd) return finish(false);
+                    next = Math.min(quietEnd, lateEnd);
+                }
+                clearTimeout(wake);
+                wake = setTimeout(function() { check(0); }, Math.max(0, Math.min(next, hardEnd) - now));
+            };
+            if (!loadedAt) window.addEventListener("load", onLoad);
+            stopWatching = watchPage(check);
+            check(0);
         });
     }
 
@@ -2034,7 +2143,8 @@
         switch (message.action) {
             case "detailsPing":
                 if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
-                sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus(), doc: DOCUMENT_TOKEN });
+                sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus(), doc: DOCUMENT_TOKEN,
+                    readyState: document.readyState });
                 break;
             case "detailsPickerStart":
                 clearLayerBoxes("found");
@@ -2057,7 +2167,7 @@
             case "detailsPreview":
                 // Waits for the page to show a field, reads one row and highlights what was found
                 (function(fields) {
-                    waitForFields(fields, message.waitMs, true).then(function() {
+                    waitForFields(fields, message.waitMs).then(function() {
                         try {
                             // The picker may have been turned on meanwhile: its boxes stay alone
                             sendResponse({
@@ -2096,7 +2206,7 @@
                 sendResponse({ ok: true });
                 break;
             case "detailsExtract":
-                // Fields missing yet are waited for up to waitMs (content drawn late by scripts)
+                // Read as soon as the page allows it (see waitForRunFields)
                 (function(fields) {
                     try {
                         if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
@@ -2107,13 +2217,11 @@
                             return;
                         }
                         var started = Date.now();
-                        waitForFields(fields, message.waitMs).then(function(complete) {
-                            try {
-                                sendResponse({ ok: true, status: status, url: window.location.href, values: extractPageDetails(fields),
-                                    complete: complete, waitedMs: Date.now() - started });
-                            } catch (e) {
-                                sendResponse({ error: String(e && e.message || e) });
-                            }
+                        waitForRunFields(fields, message).then(function(result) {
+                            sendResponse({ ok: true, status: status, url: window.location.href, values: result.values,
+                                complete: result.complete, late: result.late, waitedMs: Date.now() - started });
+                        }).catch(function(e) {
+                            sendResponse({ error: String(e && e.message || e) });
                         });
                     } catch (e) {
                         sendResponse({ error: String(e && e.message || e) });

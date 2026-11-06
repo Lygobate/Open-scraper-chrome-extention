@@ -21,6 +21,14 @@
     // yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
     // every field are read at once.
     const LATE_FIELDS_WAIT_MS = 5000;
+    // Longest wait for the page shown to tell which document it is, before a run opens the next URL
+    const OLD_DOCUMENT_PING_MS = 500;
+    // A field found empty after the full wait on this many pages in a row, and never drawn late
+    // during the run, stops holding the next pages up (it is still read when a page shows it at
+    // once or before Min ends). It is waited for again on one page after every
+    // ABSENT_FIELD_RECHECK_PAGES pages, and for good once seen drawn late.
+    const ABSENT_FIELD_PAGES = 3;
+    const ABSENT_FIELD_RECHECK_PAGES = 10;
     // Space kept under the results grid (paddings of the panel and of the step), and the delay
     // before the grid follows a change of the window size
     const GRID_BOTTOM_SPACE = 36;
@@ -582,15 +590,22 @@
      * then "complete" (the tab status alone can still describe the previous page for a moment,
      * whose content script would answer). When the tab already shows that exact URL, the page
      * is only asked whether it is ready; a change of the #fragment only is detected by the
-     * address the page reports, so it never waits for a load that does not happen.
+     * address the page reports, so it never waits for a load that does not happen. A page that
+     * cannot be reached (network error, refused connection, download) fails at once instead of
+     * waiting for the time limit.
+     * With the early option (runs), the page counts as ready as soon as it is parsed and its
+     * content script answers, without waiting for its images, frames or ads: the document that
+     * answers must then be another one than the page shown before (asked first), or be at the
+     * address opened; else the load must have completed as above.
      * @param {string} url - Address to open.
      * @param {number} limitMs - Longest wait.
-     * @param {{isCancelled: Function, busy: boolean}} [options] - Give up early; show the
-     *     "Extracting..." overlay in the page as soon as it answers.
+     * @param {{isCancelled: Function, busy: boolean, early: boolean}} [options] - Give up early;
+     *     show the "Extracting..." overlay in the page as soon as it answers; ready once parsed.
      * @returns {Promise<boolean>} True when the page is ready.
      */
     async function loadPage(url, limitMs, options) {
         const isCancelled = options && options.isCancelled || (() => false);
+        const early = !!(options && options.early);
         const pingMessage = { action: "detailsPing" };
         if (options && options.busy) pingMessage.busy = true;
         const deadline = Date.now() + Math.max(READY_POLL_MS, limitMs);
@@ -600,6 +615,14 @@
 
         let loadingSeen = false;
         let loaded = false;
+        // Only the requests of this navigation count: the one it replaces is aborted meanwhile
+        let unreachable = false;
+        const requestIds = new Set();
+        const requestFilter = { urls: ["<all_urls>"], tabId: targetTabId, types: ["main_frame"] };
+        const onRequest = details => { requestIds.add(details.requestId); };
+        const onError = details => {
+            if (requestIds.has(details.requestId)) unreachable = true;
+        };
         const onUpdated = (tabId, changeInfo) => {
             if (tabId !== targetTabId) return;
             if (changeInfo.status === "loading") {
@@ -610,12 +633,28 @@
             }
         };
         let alreadyThere = normalizeUrl(tab.url) === target && !tab.pendingUrl;
+        // While the new page loads, the page shown keeps answering: its document is noted first
+        // (undefined: it has no content script, so any answer comes from the new page; null: unknown)
+        let oldDoc = null;
+        if (early && !alreadyThere) {
+            const before = await Promise.race([sendToTab({ action: "detailsPing" }), sleep(OLD_DOCUMENT_PING_MS).then(() => null)]);
+            oldDoc = before === null ? null : (before && before.doc) || undefined;
+            if (isCancelled()) return false;
+        }
         if (!alreadyThere) {
             chromeInstance.tabs.onUpdated.addListener(onUpdated);
+            try {
+                chromeInstance.webRequest.onBeforeRequest.addListener(onRequest, requestFilter);
+                chromeInstance.webRequest.onErrorOccurred.addListener(onError, requestFilter);
+            } catch (error) {
+                // Without it, an unreachable page waits for the time limit
+            }
             try {
                 await chromeInstance.tabs.update(targetTabId, { url: url });
             } catch (error) {
                 chromeInstance.tabs.onUpdated.removeListener(onUpdated);
+                chromeInstance.webRequest.onBeforeRequest.removeListener(onRequest);
+                chromeInstance.webRequest.onErrorOccurred.removeListener(onError);
                 return false;
             }
         }
@@ -625,14 +664,16 @@
         // A page already shown but without a content script (opened before the extension) is reloaded once
         let reloadAt = alreadyThere ? Date.now() + 1000 : 0;
         try {
-            while (Date.now() < deadline && !isCancelled()) {
+            while (Date.now() < deadline && !isCancelled() && !unreachable) {
                 const current = await getTargetTab();
                 if (!current) return false;
-                if (current.status === "complete" && (loadingSeen || Date.now() >= askFrom)) {
+                if ((early || current.status === "complete") && (loadingSeen || Date.now() >= askFrom)) {
                     const response = await sendToTab(pingMessage);
                     if (response && isCancelled() && pingMessage.busy) sendToTab({ action: "detailsBusy", on: false });
                     const sameDocument = response && normalizeUrl(response.url) === target;
-                    if (response && response.ready && (alreadyThere || loaded || sameDocument)) {
+                    const newDocument = response && early && oldDoc !== null && response.doc !== oldDoc &&
+                        response.readyState !== "loading";
+                    if (response && response.ready && (alreadyThere || loaded || sameDocument || newDocument)) {
                         connectSessionPort(response.doc);
                         return true;
                     }
@@ -648,6 +689,8 @@
             return false;
         } finally {
             chromeInstance.tabs.onUpdated.removeListener(onUpdated);
+            chromeInstance.webRequest.onBeforeRequest.removeListener(onRequest);
+            chromeInstance.webRequest.onErrorOccurred.removeListener(onError);
         }
     }
 
@@ -1832,6 +1875,8 @@
         const stopped = new Promise(resolve => { state.resolveStop = resolve; });
         const isStopped = () => runId !== state.runId;
         const fields = template.fields.map(field => ({ id: field.id, kind: field.kind, selectors: field.selectors }));
+        // What the run learns of each field (see ABSENT_FIELD_PAGES)
+        const learned = fields.map(() => ({ absentPages: 0, skippedPages: 0, late: false }));
         state.running = true;
         state.runStartedAt = Date.now();
         state.ticker = setInterval(updateRunUi, 1000);
@@ -1843,22 +1888,33 @@
             const url = state.urls[index].trim();
             const row = { url: state.urls[index], values: {}, failed: false };
             if (isUsableUrl(url)) {
-                // The page takes at least Min seconds and at most about Max seconds to load
+                // The page takes at least Min seconds and at most about Max seconds. It is read
+                // once parsed: the content script waits for Min and for the fields drawn late.
                 const wait = getWait();
                 const pageStart = Date.now();
                 const limitMs = Math.max(1, wait.max) * 1000;
-                const [ready] = await Promise.race([
-                    Promise.all([loadPage(url, limitMs, { isCancelled: isStopped, busy: true }), sleep(wait.min * 1000)]),
-                    stopped.then(() => [false])
+                const minEnd = pageStart + wait.min * 1000;
+                const ready = await Promise.race([
+                    loadPage(url, limitMs, { isCancelled: isStopped, busy: true, early: true }),
+                    stopped.then(() => false)
                 ]);
                 if (isStopped()) return;
                 let response;
                 if (ready) {
-                    const waitMs = Math.max(0, Math.min(LATE_FIELDS_WAIT_MS, limitMs - (Date.now() - pageStart)));
+                    const awaited = learned.map(field => field.late || field.absentPages < ABSENT_FIELD_PAGES ||
+                        field.skippedPages >= ABSENT_FIELD_RECHECK_PAGES);
                     response = await Promise.race([
-                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, waitMs: waitMs }, 2000, isStopped),
+                        sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, awaited: awaited,
+                            notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: LATE_FIELDS_WAIT_MS,
+                            limitMs: Math.max(0, pageStart + limitMs - Date.now()) }, 2000, isStopped),
                         stopped.then(() => undefined)
                     ]);
+                    if (isStopped()) return;
+                    if (response && response.ok && Array.isArray(response.values)) learnFields(learned, awaited, response);
+                }
+                if (Date.now() < minEnd) {
+                    // Error page or no answer: the page still takes Min seconds
+                    await Promise.race([sleep(minEnd - Date.now()), stopped]);
                     if (isStopped()) return;
                 }
                 if (response && response.ok && Array.isArray(response.values)) {
@@ -1876,6 +1932,29 @@
         }
         finishRun(runId, state.failed ? plural(state.failed, "page") +
             " could not be read (error page, time limit or no answer): only the URL is in the row." : "Done.", state.failed ? "warning" : "info");
+    }
+
+    /**
+     * Notes, after a page of a run, which fields showed late and which stayed absent after the
+     * full wait (see ABSENT_FIELD_PAGES).
+     * @param {Array<{absentPages: number, skippedPages: number, late: boolean}>} learned - Per
+     *     field, updated in place.
+     * @param {boolean[]} awaited - Per field, whether the page waited for it.
+     * @param {{values: Array, complete: boolean, late: boolean[]}} response - Page answer.
+     */
+    function learnFields(learned, awaited, response) {
+        learned.forEach((field, i) => {
+            if (response.late && response.late[i]) {
+                field.late = true;
+                field.absentPages = 0;
+            } else if (awaited[i]) {
+                if (response.values[i]) field.absentPages = 0;
+                else if (!response.complete) field.absentPages++;
+                field.skippedPages = 0;
+            } else {
+                field.skippedPages++;
+            }
+        });
     }
 
     /**
