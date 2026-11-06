@@ -472,6 +472,8 @@
     var LABEL_VALUE_LENGTH = 200;
     // Boxes are placed again at this interval while shown, for pages that move on their own
     var BOX_REFRESH_MS = 500;
+    // Pixels scrolled per wheel "line" (wheels that report lines instead of pixels)
+    var WHEEL_LINE_PX = 40;
 
     var LAYER_STYLE =
         ":host{all:initial}" +
@@ -1589,6 +1591,89 @@
     }
 
     /**
+     * Finds the element that should scroll for a move under a point: the closest ancestor of
+     * the element there that can still scroll that way. The page's own scrolling element is
+     * left to the browser (null), which scrolls it natively and smoothly.
+     * @param {number} x - Viewport x.
+     * @param {number} y - Viewport y.
+     * @param {number} dx - Horizontal move (pixels, negative to the left).
+     * @param {number} dy - Vertical move (pixels, negative upwards).
+     * @returns {Element|null} Element to scroll, or null.
+     */
+    function findScrollTarget(x, y, dx, dy) {
+        var catcher = layer.catcher;
+        var element;
+        catcher.style.pointerEvents = "none";
+        try {
+            element = document.elementFromPoint(x, y);
+        } finally {
+            catcher.style.pointerEvents = "";
+        }
+        var documentScroller = document.scrollingElement || document.documentElement;
+        while (element && element !== documentScroller && element !== document.documentElement) {
+            if (element !== document.body && element !== layer.host) {
+                var style = getComputedStyle(element);
+                var canY = dy && /^(auto|scroll|overlay)$/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1 &&
+                    (dy > 0 ? element.scrollTop + element.clientHeight < element.scrollHeight - 1 : element.scrollTop > 0);
+                var canX = dx && /^(auto|scroll|overlay)$/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1 &&
+                    (dx > 0 ? element.scrollLeft + element.clientWidth < element.scrollWidth - 1 : element.scrollLeft > 0);
+                if (canY || canX) return element;
+            }
+            element = element.parentElement || (element.getRootNode && element.getRootNode().host) || null;
+        }
+        return null;
+    }
+
+    /**
+     * Mouse wheel over the picker's overlay: the overlay covers the page, so the browser would
+     * only scroll the document. Pages that scroll an inner box (web apps whose body does not
+     * scroll) get that box scrolled instead.
+     * @param {WheelEvent} event - Wheel event.
+     */
+    function onPickerWheel(event) {
+        if (!fieldPicker || !layer || event.ctrlKey || event.composedPath().indexOf(layer.catcher) === -1) return;
+        var scale = event.deltaMode === 1 ? WHEEL_LINE_PX : (event.deltaMode === 2 ? window.innerHeight : 1);
+        var dx = event.deltaX * scale;
+        var dy = event.deltaY * scale;
+        var target = findScrollTarget(event.clientX, event.clientY, dx, dy);
+        if (!target) return;
+        event.preventDefault();
+        target.scrollBy({ left: dx, top: dy, behavior: "instant" });
+    }
+
+    /**
+     * Scrolls the inner box under the pointer with the page keys (Page Up / Page Down, Space,
+     * Home, End). The document itself is left to the browser.
+     * @param {KeyboardEvent} event - Key event.
+     * @returns {boolean} True when the key scrolled a box.
+     */
+    function scrollWithKey(event) {
+        var pointer = fieldPicker.pointer;
+        if (!pointer || event.ctrlKey || event.metaKey || event.altKey) return false;
+        var down = event.key === "PageDown" || event.key === "End" || (event.key === " " && !event.shiftKey);
+        var up = event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey);
+        if (!down && !up) return false;
+        var target = findScrollTarget(pointer.x, pointer.y, 0, down ? 1 : -1);
+        if (!target) return false;
+        if (event.key === "Home") target.scrollTo({ top: 0, behavior: "instant" });
+        else if (event.key === "End") target.scrollTo({ top: target.scrollHeight, behavior: "instant" });
+        else target.scrollBy({ top: (down ? 1 : -1) * target.clientHeight * 0.875, behavior: "instant" });
+        return true;
+    }
+
+    /**
+     * The page scrolled while picking: the element under the pointer changed, hover it.
+     */
+    function onPickerScroll() {
+        if (!fieldPicker || fieldPicker.scrollFrame) return;
+        fieldPicker.scrollFrame = requestAnimationFrame(function() {
+            if (!fieldPicker) return;
+            fieldPicker.scrollFrame = 0;
+            updatePickerHover(false);
+        });
+    }
+
+    /**
      * Keyboard: Up / Down move through the elements under the pointer, Enter selects,
      * Escape hides the hover (and ends picking when nothing is hovered).
      * @param {KeyboardEvent} event - Key down event.
@@ -1611,7 +1696,7 @@
         } else if (event.key === "Enter" && getHoveredInfo()) {
             pickHoveredElement();
         } else {
-            handled = false;
+            handled = scrollWithKey(event);
         }
         if (handled) {
             event.preventDefault();
@@ -1688,12 +1773,15 @@
             cancelled: false,
             hoverBox: null,
             moveFrame: 0,
+            scrollFrame: 0,
             pickedKinds: new Map(),
             port: null
         };
         onLayerEvent(parts.catcher, "mousemove", onPickerPointerMove);
         onLayerEvent(parts.catcher, "click", onPickerClick);
         window.addEventListener("keydown", onPickerKeyDown, true);
+        window.addEventListener("wheel", onPickerWheel, { capture: true, passive: false });
+        document.addEventListener("scroll", onPickerScroll, true);
         window.focus();
     }
 
@@ -1704,6 +1792,9 @@
         if (!fieldPicker) return;
         cancelAnimationFrame(fieldPicker.moveFrame);
         window.removeEventListener("keydown", onPickerKeyDown, true);
+        window.removeEventListener("wheel", onPickerWheel, { capture: true, passive: false });
+        document.removeEventListener("scroll", onPickerScroll, true);
+        cancelAnimationFrame(fieldPicker.scrollFrame);
         if (layer) {
             onLayerEvent(layer.catcher, "mousemove", onPickerPointerMove, true);
             onLayerEvent(layer.catcher, "click", onPickerClick, true);
