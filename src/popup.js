@@ -663,6 +663,7 @@
         scrapingState.tableSelector = tableData.tableSelector;
         scrapingState.hostName = tableData.hostname;
         scrapingState.pages = 0;
+        scrapingState.roundCut = false;
 
         scrapingState.previewLength = 0;
         scrapingState.configName = tableData.hostname + "-config";
@@ -763,19 +764,19 @@
     }
 
     /**
-     * Stops the current scraping process. A "Load more" round under way ends first
-     * (Max delay at most): the crawl controls come back once it has. "Try another table"
-     * comes back once no round is under way.
+     * Stops the current scraping process at once: the crawl run ends (a new run id), so a round
+     * still under way is dropped when it answers. A "Next page" or "Scroll down" round cut that
+     * way already acted on the page: the next run reads the page first instead of acting again.
      */
     function stopScraping() {
         scrapingState.scraping = false;
+        scrapingState.runId = (scrapingState.runId || 0) + 1;
+        if (scrapingState.pageRound) scrapingState.roundCut = true;
+        scrapingState.pageRound = scrapingState.roundPending = false;
         console.log("Scraping stopped.");
         $("#stopScraping").hide();
-        if (scrapingState.roundPending) {
-            return showStatusMessage("Stopping...", "instructions");
-        }
         $("#startScraping").show();
-        if (!scrapingState.pageRound) $("#wrongTable").show();
+        $("#wrongTable").show();
         $("#moreRows").prop("disabled", false);
         $("#locateButton").toggle(!!MORE_ROWS_MODES[getMoreRowsMode()].buttonKey);
         showStatusMessage("Crawling stopped. Please download data or continue crawling.", "instructions");
@@ -801,8 +802,9 @@
      * keeps the rows already read, so each round reads only the rows after them.
      * Stops when the button is gone (warning) or disabled (all loaded), when a click adds no
      * rows within Max delay, or when the user stops.
+     * @param {number} runId - Id of this crawl run: answers of a former run are dropped.
      */
-    function crawlWithLoadMore() {
+    function crawlWithLoadMore(runId) {
         let startTime = new Date();
 
         !function loadMoreRound() {
@@ -820,6 +822,7 @@
                 },
                 function(response) {
                     void chromeInstance.runtime.lastError;
+                    if (runId !== scrapingState.runId) return;
                     scrapingState.roundPending = false;
                     scrapingState.workingTime += new Date() - startTime;
                     startTime = new Date();
@@ -1006,6 +1009,9 @@
     $("#startScraping").click(function() {
         const mode = getMoreRowsMode();
         stopButtonPicking();
+        const runId = scrapingState.runId = (scrapingState.runId || 0) + 1;
+        let actOnPage = !scrapingState.roundCut;
+        scrapingState.roundCut = false;
         scrapingState.scraping = true;
         $("#startScraping").hide();
         $("#wrongTable").hide();
@@ -1020,14 +1026,15 @@
         );
 
         if (mode === "loadMore") {
-            return crawlWithLoadMore();
+            return crawlWithLoadMore(runId);
         }
 
         let startTime = new Date();
 
         // Start the recursive crawl routine. A round (scroll or click, wait, read) under way
-        // when the crawl stops still reads its page.
+        // when the crawl stops is dropped; the first round after one cut only reads the page.
         !function crawlNextPage() {
+            if (runId !== scrapingState.runId) return;
             scrapingState.pageRound = true;
             const scrollDownPage = function(callback) {
                 chromeInstance.tabs.sendMessage(
@@ -1037,7 +1044,7 @@
                         selector: scrapingState.tableSelector
                     },
                     function(response) {
-                        if (response && response.error) {
+                        if (response && response.error && runId === scrapingState.runId) {
                             scrapingState.pageRound = false;
                             showStatusMessage("", "instructions");
                             return showStatusMessage(response.error, response.errorId || "error", true);
@@ -1055,7 +1062,7 @@
                         selector: scrapingState.nextSelector
                     },
                     function(response) {
-                        if (response && response.error) {
+                        if (response && response.error && runId === scrapingState.runId) {
                             scrapingState.pageRound = false;
                             showStatusMessage("", "instructions");
                             return showStatusMessage(response.error, response.errorId, true);
@@ -1068,6 +1075,8 @@
             if (mode === "scroll") {
                 clickNextPageButton = scrollDownPage;
             }
+            const pageAction = actOnPage ? clickNextPageButton : null;
+            actOnPage = true;
 
             // Routine to listen and wait for new page load via active network requests
             (function waitForPageToLoad(actionTrigger, onLoadComplete, tabId, maxWaitTime, pollInterval, crawlDelay, checkTabAlive) {
@@ -1082,18 +1091,24 @@
                 };
 
                 function checkCompletion() {
+                    if (!isLoaded && runId !== scrapingState.runId) return stopWaiting();
                     if (!isLoaded && isTimeoutReached) {
                         checkTabAlive(function(isAlive) {
+                            if (!isLoaded && runId !== scrapingState.runId) return stopWaiting();
                             if (!isAlive) return triggerErrorCallback();
                             if (!isLoaded) {
-                                isLoaded = true;
-                                chromeInstance.webRequest.onBeforeRequest.removeListener(onBeforeRequestHandler);
-                                chromeInstance.webRequest.onCompleted.removeListener(onCompletedHandler);
-                                chromeInstance.webRequest.onErrorOccurred.removeListener(onCompletedHandler);
+                                stopWaiting();
                                 onLoadComplete();
                             }
                         });
                     }
+                }
+
+                function stopWaiting() {
+                    isLoaded = true;
+                    chromeInstance.webRequest.onBeforeRequest.removeListener(onBeforeRequestHandler);
+                    chromeInstance.webRequest.onCompleted.removeListener(onCompletedHandler);
+                    chromeInstance.webRequest.onErrorOccurred.removeListener(onCompletedHandler);
                 }
 
                 function onBeforeRequestHandler(details) {
@@ -1132,7 +1147,7 @@
                     }, crawlDelay);
                 });
             })(
-                clickNextPageButton,
+                pageAction,
                 function() {
                     // Page loaded -> retrieve new table data rows
                     chromeInstance.tabs.sendMessage(
@@ -1142,6 +1157,7 @@
                             selector: scrapingState.tableSelector
                         },
                         function(response) {
+                            if (runId !== scrapingState.runId) return;
                             scrapingState.pageRound = false;
                             if (response) {
                                 if (response.error) {
