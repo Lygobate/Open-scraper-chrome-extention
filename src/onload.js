@@ -597,7 +597,137 @@
             return option ? cleanText(option.text) : "";
         }
         if (!(element instanceof HTMLElement)) return "";
-        return cleanText(element.innerText);
+        return cleanText(readRenderedText(element));
+    }
+
+    // Beyond this many text nodes, the text of an element is read with innerText (large blocks)
+    var MAX_TEXT_NODES = 400;
+    // Parents whose text is never shown
+    var HIDDEN_TEXT_PARENTS = /^(script|style|noscript|template|title)$/;
+
+    /**
+     * Tells whether an element is rendered but hidden from sight on purpose, the way pages keep
+     * a full copy of a value for screen readers (transparent, clipped, 1 px or off-screen).
+     * @param {Element} element - Element.
+     * @param {CSSStyleDeclaration} style - Its computed style.
+     * @returns {boolean} True when visually hidden.
+     */
+    function isVisuallyHidden(element, style) {
+        if (parseFloat(style.opacity) === 0) return true;
+        if (style.position !== "absolute" && style.position !== "fixed") return false;
+        var rect = element.getBoundingClientRect();
+        return rect.width <= 1 || rect.height <= 1 || (style.clip && style.clip !== "auto") ||
+            (style.clipPath && style.clipPath !== "none") || rect.right + window.scrollX <= 0 || rect.bottom + window.scrollY <= 0;
+    }
+
+    /**
+     * Lists the rendered text pieces of an element, in document order, with their boxes.
+     * @param {Element} element - Element to read.
+     * @returns {Array<Object>|null} Pieces {text, first, last, size, hidden}, or null when the
+     *     element has too many text nodes to be read this way.
+     */
+    function getTextPieces(element) {
+        var styles = new Map();
+        var styleOf = function(node) {
+            if (!styles.has(node)) styles.set(node, getComputedStyle(node));
+            return styles.get(node);
+        };
+        var hiddenRoots = new Map();
+        // The closest visually hidden ancestor inside the element (the element itself excluded)
+        var hiddenRootOf = function(node) {
+            if (node === element || !node) return null;
+            if (!hiddenRoots.has(node)) {
+                hiddenRoots.set(node, isVisuallyHidden(node, styleOf(node)) ? node : hiddenRootOf(node.parentElement));
+            }
+            return hiddenRoots.get(node);
+        };
+        var pieces = [];
+        var range = document.createRange();
+        var walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        var count = 0;
+        for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (++count > MAX_TEXT_NODES) return null;
+            var parent = node.parentElement;
+            if (!parent || HIDDEN_TEXT_PARENTS.test(parent.localName) || !node.data) continue;
+            var style = styleOf(parent);
+            if (style.visibility !== "visible") continue;
+            range.selectNodeContents(node);
+            var rects = Array.prototype.filter.call(range.getClientRects(), function(rect) { return rect.width > 0 || rect.height > 0; });
+            // Not rendered (inside display:none) or whitespace collapsed away
+            if (!rects.length) continue;
+            var text = node.data;
+            if (style.textTransform === "uppercase") text = text.toUpperCase();
+            else if (style.textTransform === "lowercase") text = text.toLowerCase();
+            else if (style.textTransform === "capitalize") text = text.replace(/(^|\s)(\S)/g, function(m, space, ch) { return space + ch.toUpperCase(); });
+            pieces.push({
+                text: /\S/.test(text) ? text : " ",
+                first: rects[0],
+                last: rects[rects.length - 1],
+                size: parseFloat(style.fontSize) || 16,
+                hidden: hiddenRootOf(parent)
+            });
+        }
+        return pieces;
+    }
+
+    /**
+     * Tells whether two consecutive text pieces are apart on screen: on different lines (unless
+     * the second one starts right where the first ends, like a superscript), or on the same
+     * line with a gap wider than a fraction of a space.
+     * @param {Object} a - First piece.
+     * @param {Object} b - Next piece.
+     * @returns {boolean} True when a space separates them.
+     */
+    function arePiecesApart(a, b) {
+        var left = a.last;
+        var right = b.first;
+        var tolerance = 0.2 * Math.min(a.size, b.size);
+        var gap = Math.max(right.left - left.right, left.left - right.right);
+        var sameLine = right.top < left.bottom && right.bottom > left.top;
+        if (sameLine) return gap > tolerance;
+        return !(right.left >= left.right - 1 && right.left - left.right <= tolerance);
+    }
+
+    /**
+     * Joins text pieces the way the page shows them: no space between pieces that touch
+     * (a price split into "11", ",", "95", "€"), one space between pieces apart on screen.
+     * @param {Array<Object>} pieces - Pieces (see getTextPieces).
+     * @returns {string} Text.
+     */
+    function joinTextPieces(pieces) {
+        var text = "";
+        var previous = null;
+        pieces.forEach(function(piece) {
+            if (previous && !/\s$/.test(text) && !/^\s/.test(piece.text) && arePiecesApart(previous, piece)) text += " ";
+            text += piece.text;
+            previous = piece;
+        });
+        return text;
+    }
+
+    /**
+     * Reads the text of an element as shown on screen. Inline pieces are joined without the
+     * line breaks innerText adds around floated, positioned or flex pieces. When the element
+     * holds a visually hidden copy of what it shows in pieces (a full price kept for screen
+     * readers), that copy is used. Large or unrendered elements are read with innerText.
+     * @param {HTMLElement} element - Element to read.
+     * @returns {string} Raw text (not cleaned).
+     */
+    function readRenderedText(element) {
+        var pieces = getTextPieces(element);
+        if (!pieces || !pieces.some(function(piece) { return piece.text !== " "; })) return element.innerText;
+        var visible = pieces.filter(function(piece) { return !piece.hidden; });
+        if (visible.length < pieces.length && visible.some(function(piece) { return piece.text !== " "; })) {
+            var squash = function(text) { return cleanText(text).replace(/\s+/g, ""); };
+            var shown = squash(joinTextPieces(visible));
+            var roots = [];
+            pieces.forEach(function(piece) { if (piece.hidden && roots.indexOf(piece.hidden) === -1) roots.push(piece.hidden); });
+            for (var i = 0; i < roots.length; i++) {
+                var copy = joinTextPieces(pieces.filter(function(piece) { return piece.hidden === roots[i]; }));
+                if (shown && squash(copy) === shown) return copy;
+            }
+        }
+        return joinTextPieces(pieces);
     }
 
     /**
