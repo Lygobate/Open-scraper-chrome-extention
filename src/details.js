@@ -1524,9 +1524,9 @@
 
     /**
      * Draws the preview table: the URL column, then one row per field with a drag handle, its
-     * kind, column name (renamable), value read in the test page, and buttons to move it up or
-     * down and to remove it. Not redrawn while a name is being edited or a field dragged (it is
-     * drawn again when that ends).
+     * kind, column name (renamable), value read in the test page, and a button to remove it.
+     * Not redrawn while a name is being edited or a field dragged (it is drawn again when that
+     * ends).
      * @param {Object} template - Template.
      * @param {Object<string, string>|null} values - Values by field id, or null while loading.
      */
@@ -1540,19 +1540,7 @@
         body.textContent = "";
         $id("detailsPreviewHint").hidden = count < 2 || busy;
         const columns = getResultColumns(template);
-        const addButton = (cell, text, title, label, disabled, onClick) => {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "osd-btn osd-btn-icon";
-            button.textContent = text;
-            button.title = title;
-            button.setAttribute("aria-label", label);
-            button.disabled = disabled;
-            button.addEventListener("click", onClick);
-            cell.appendChild(button);
-            return button;
-        };
-        const addRow = (kindKey, kindLabel, key, name, value, missing, field, index) => {
+        const addRow = (kindKey, kindLabel, key, name, value, missing, field) => {
             const row = document.createElement("tr");
             const handleCell = document.createElement("td");
             handleCell.className = "osd-preview-handle";
@@ -1601,20 +1589,23 @@
             const actionsCell = document.createElement("td");
             actionsCell.className = "osd-preview-actions";
             if (field) {
-                addButton(actionsCell, "↑", "Move up", "Move " + name + " up", busy || index === 0,
-                    () => moveFieldByButton(template.id, field.id, -1)).dataset.move = "up";
-                addButton(actionsCell, "↓", "Move down", "Move " + name + " down", busy || index === count - 1,
-                    () => moveFieldByButton(template.id, field.id, 1)).dataset.move = "down";
-                addButton(actionsCell, "×", "Remove this field from the template", "Remove field " + name, busy,
-                    () => removeTemplateField(template.id, field.id)).classList.add("osd-remove");
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "osd-btn osd-btn-icon osd-remove";
+                remove.textContent = "×";
+                remove.title = "Remove this field from the template";
+                remove.setAttribute("aria-label", "Remove field " + name);
+                remove.disabled = busy;
+                remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
+                actionsCell.appendChild(remove);
             }
             row.append(handleCell, kindCell, nameCell, valueCell, actionsCell);
             body.appendChild(row);
         };
-        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null, -1);
+        addRow("url", "URL", "url", columns[0], state.previewUrl || getTestUrl(), false, null);
         template.fields.forEach((field, index) => {
             const value = values ? values[field.id] || "" : "";
-            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field, index);
+            addRow(field.kind, KIND_LABELS[field.kind], field.id, columns[index + 1], value, !!values && !value, field);
         });
     }
 
@@ -1622,22 +1613,16 @@
      * Returns the fields in a new order, or null when the move changes nothing.
      * @param {Object[]} fields - Fields of a template.
      * @param {string} fieldId - Field to move.
-     * @param {{by: number}|{nextTo: string, after: boolean}} target - Places to move it by, or the
-     *     field to put it before or after.
+     * @param {{nextTo: string, after: boolean}} target - Field to put it before or after.
      * @returns {Object[]|null} Fields in their new order.
      */
     function reorderFields(fields, fieldId, target) {
         const from = fields.findIndex(field => field.id === fieldId);
         if (from === -1) return null;
         const rest = fields.filter(field => field.id !== fieldId);
-        let to;
-        if (target.nextTo) {
-            const index = rest.findIndex(field => field.id === target.nextTo);
-            if (index === -1) return null;
-            to = index + (target.after ? 1 : 0);
-        } else {
-            to = Math.max(0, Math.min(rest.length, from + target.by));
-        }
+        const index = rest.findIndex(field => field.id === target.nextTo);
+        if (index === -1) return null;
+        const to = index + (target.after ? 1 : 0);
         if (to === from) return null;
         rest.splice(to, 0, fields[from]);
         return rest;
@@ -1649,7 +1634,7 @@
      * results already extracted keep their values (they are stored by field id).
      * @param {string} templateId - Template id.
      * @param {string} fieldId - Field to move.
-     * @param {{by: number}|{nextTo: string, after: boolean}} target - See reorderFields.
+     * @param {{nextTo: string, after: boolean}} target - See reorderFields.
      * @returns {Promise<boolean>} True when the new order was saved.
      */
     async function moveTemplateField(templateId, fieldId, target) {
@@ -1659,22 +1644,6 @@
             const fields = reorderFields(t.fields, fieldId, target);
             if (fields) t.fields = fields;
         });
-    }
-
-    /**
-     * Moves a field one place with its arrow button, then puts the focus back on that button
-     * (or on the other arrow once the field reached the end).
-     * @param {string} templateId - Template id.
-     * @param {string} fieldId - Field to move.
-     * @param {number} by - -1 (up) or 1 (down).
-     */
-    async function moveFieldByButton(templateId, fieldId, by) {
-        await moveTemplateField(templateId, fieldId, { by: by });
-        const row = $id("detailsPreviewBody").querySelector('tr[data-field-id="' + CSS.escape(fieldId) + '"]');
-        if (!row) return;
-        const same = row.querySelector('[data-move="' + (by < 0 ? "up" : "down") + '"]');
-        const other = row.querySelector('[data-move="' + (by < 0 ? "down" : "up") + '"]');
-        (same && !same.disabled ? same : other).focus();
     }
 
     /**
