@@ -97,6 +97,8 @@
     // Widest a column gets, and room taken in a header by its two buttons and padding
     const MAX_COL_WIDTH = 200;
     const HEADER_ACTIONS_WIDTH = 56;
+    // Room around a value in a grid cell
+    const CELL_PADDING = 12;
 
     // Ways to get more rows than the page shows at first: Min / Max delay defaults (ms), the
     // localStorage key prefix of the page button they click and the label of the action locating it
@@ -434,91 +436,164 @@
     }
 
     /**
-     * Returns the width a column needs to show its whole name beside its header buttons.
-     * @param {string} name - Column name.
+     * Returns the width a text takes in the grid.
+     * @param {string} text - Text.
+     * @param {string} weight - Font weight.
      * @returns {number} Width in pixels.
      */
-    function getHeaderWidth(name) {
-        const canvas = getHeaderWidth.canvas || (getHeaderWidth.canvas = document.createElement("canvas"));
+    function measureText(text, weight) {
+        const canvas = measureText.canvas || (measureText.canvas = document.createElement("canvas"));
         const context = canvas.getContext("2d");
-        context.font = "500 12px " + getComputedStyle(document.body).fontFamily;
-        return Math.ceil(context.measureText(name).width) + HEADER_ACTIONS_WIDTH;
+        context.font = weight + " 12px " + getComputedStyle(document.body).fontFamily;
+        return Math.ceil(context.measureText(text).width);
     }
 
     /**
-     * Renders the interactive data grid using the Handsontable library. Each column header
-     * shows its fill count, its name and its actions: rename (pencil) and delete (cross).
+     * Returns the starting width of a column: enough for its whole name beside its header
+     * buttons and for its values, at most MAX_COL_WIDTH.
+     * @param {string} name - Column name.
+     * @param {Array<Array<*>>} rows - Rows shown.
+     * @param {number} col - Column index.
+     * @returns {number} Width in pixels.
+     */
+    function getColumnWidth(name, rows, col) {
+        let content = 0;
+        for (let i = 0; i < Math.min(rows.length, 100) && content < MAX_COL_WIDTH; i++) {
+            const cell = rows[i][col];
+            if (cell !== null && cell !== undefined) content = Math.max(content, measureText(String(cell), "400") + CELL_PADDING);
+        }
+        return Math.min(MAX_COL_WIDTH, Math.max(content, measureText(name, "500") + HEADER_ACTIONS_WIDTH));
+    }
+
+    /**
+     * Returns the size available for the list grid: the window width and the height left down
+     * to the footer.
+     * @returns {{width: number, height: number}} Size in pixels.
+     */
+    function getListGridSize() {
+        const footerEl = document.querySelector(".popup-footer");
+        const footerHeight = footerEl ? footerEl.getBoundingClientRect().height : 52;
+        scrapingState.tableTop = $("#hot").get(0).getBoundingClientRect().y;
+        return {
+            width: $(window).width() - 20,
+            height: $(window).height() - scrapingState.tableTop - footerHeight - GRID_BOTTOM_SPACE
+        };
+    }
+
+    /**
+     * Fits the list grid to the window, keeping its data, column widths and scroll position.
+     */
+    function fitListGrid() {
+        const grid = scrapingState.grid;
+        if (!grid) return;
+        const size = getListGridSize();
+        if (scrapingState.gridSize && scrapingState.gridSize.width === size.width && scrapingState.gridSize.height === size.height) return;
+        const holder = document.querySelector("#hot .ht_master .wtHolder");
+        const left = holder ? holder.scrollLeft : 0;
+        const top = holder ? holder.scrollTop : 0;
+        scrapingState.gridSize = size;
+        grid.updateSettings({ width: size.width, height: size.height });
+        if (holder) setListGridScroll(holder, left, top);
+    }
+
+    /**
+     * Scrolls the grid's cells and makes its headers follow: they only move on a scroll event.
+     * @param {HTMLElement} holder - Scrolling box of the grid's cells.
+     * @param {number} left - Horizontal position.
+     * @param {number} top - Vertical position.
+     */
+    function setListGridScroll(holder, left, top) {
+        holder.scrollLeft = left;
+        holder.scrollTop = top;
+        holder.dispatchEvent(new Event("scroll"));
+    }
+
+    /**
+     * Removes the list grid.
+     */
+    function destroyListGrid() {
+        if (scrapingState.grid) scrapingState.grid.destroy();
+        scrapingState.grid = null;
+        scrapingState.gridKey = "";
+        $("#hot").empty();
+    }
+
+    /**
+     * Shows the collected rows in the list grid. Each column header shows its fill count, its
+     * name and its actions: rename (pencil) and delete (cross). The grid is kept while its
+     * columns stay the same, so new rows, renames and window resizes keep the widths set by
+     * dragging a header edge; it is created again only when the columns change, each column
+     * that stays keeping its width.
      */
     function renderHandsontable() {
         const previewData = findOptimalDataFields(scrapingState.data);
         const rowTotal = previewData.data.length;
-        const filledCounts = previewData.fields.map((_, col) => previewData.data.filter(row => isFilledCell(row[col])).length);
-        const headers = applyHeaderRenames(previewData.fields);
-        const headerWidths = headers.map(getHeaderWidth);
-        // Widths set by dragging a header edge, by field so they survive every re-render
-        const userWidths = scrapingState.columnWidths || (scrapingState.columnWidths = {});
         const fields = previewData.fields;
-        previewData.data = previewData.data.slice(0, PREVIEW_LIMIT);
-        scrapingState.previewLength = previewData.data.length;
-        scrapingState.gridFields = previewData.fields;
+        const rows = previewData.data.slice(0, PREVIEW_LIMIT);
+        // Read by the header renderer of the grid on each render
+        scrapingState.gridView = {
+            headers: applyHeaderRenames(fields),
+            filledCounts: fields.map((_, col) => previewData.data.filter(row => isFilledCell(row[col])).length),
+            rowTotal: rowTotal
+        };
+        scrapingState.previewLength = rows.length;
+        scrapingState.gridFields = fields;
         $("#listRowCount").text(rowTotal + (rowTotal === 1 ? " row" : " rows"));
 
-        const oldHolder = document.querySelector("#hot .ht_master .wtHolder");
-        const scrollTop = oldHolder ? oldHolder.scrollTop : 0;
-        const scrollLeft = oldHolder ? oldHolder.scrollLeft : 0;
-        let hasRendered = false;
+        const key = JSON.stringify([scrapingState.tableId, fields]);
+        if (scrapingState.grid && key === scrapingState.gridKey) {
+            // Same columns: new rows go into the grid's own array, then one render
+            scrapingState.gridData.length = 0;
+            rows.forEach(row => scrapingState.gridData.push(row));
+            scrapingState.grid.render();
+            fitListGrid();
+            return;
+        }
 
-        $("#hot").empty();
-        scrapingState.tableTop = $("#hot").get(0).getBoundingClientRect().y;
+        // Widths of the columns that stay, by field
+        const keptWidths = {};
+        const oldGrid = scrapingState.grid;
+        if (oldGrid && JSON.parse(scrapingState.gridKey)[0] === scrapingState.tableId) {
+            (scrapingState.gridColumns || []).forEach((field, col) => { keptWidths[field] = oldGrid.getColWidth(col); });
+        }
+        const holder = document.querySelector("#hot .ht_master .wtHolder");
+        const left = holder ? holder.scrollLeft : 0;
+        const top = holder ? holder.scrollTop : 0;
+        destroyListGrid();
 
-        const footerEl = document.querySelector(".popup-footer");
-        const footerHeight = footerEl ? footerEl.getBoundingClientRect().height : 52;
-
-        new Handsontable($("#hot").get(0), {
-            data: previewData.data,
+        const size = getListGridSize();
+        const headers = scrapingState.gridView.headers;
+        scrapingState.gridKey = key;
+        scrapingState.gridColumns = fields;
+        scrapingState.gridSize = size;
+        scrapingState.gridData = rows;
+        scrapingState.grid = new Handsontable($("#hot").get(0), {
+            data: scrapingState.gridData,
             colHeaders: function(col) {
-                const name = escapeHtml(headers[col] || "");
-                return getColumnStatHtml(filledCounts[col] || 0, rowTotal) +
+                const view = scrapingState.gridView;
+                const name = escapeHtml(view.headers[col] || "");
+                return getColumnStatHtml(view.filledCounts[col] || 0, view.rowTotal) +
                     '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
                     '<button type="button" class="osd-col-action" data-col-action="rename" data-col="' + col +
                     '" title="Rename column">&#9998;</button>' +
                     '<button type="button" class="osd-col-action" data-col-action="delete" data-col="' + col +
                     '" title="Delete column">&times;</button></span>';
             },
-            rowHeaders: previewData.fields.length > 0,
+            rowHeaders: fields.length > 0,
             columnHeaderHeight: GRID_HEADER_HEIGHT,
             wordWrap: false,
-            manualColumnResize: fields.map(field => userWidths[field]),
-            width: $(window).width() - 20,
-            height: $(window).height() - $("#hot").get(0).getBoundingClientRect().y - footerHeight - GRID_BOTTOM_SPACE,
-            afterRender: function() {
-                if (!hasRendered) {
-                    hasRendered = true;
-                    const holder = document.querySelector("#hot .ht_master .wtHolder");
-                    if (holder) {
-                        // The headers follow the cells on a scroll event only
-                        holder.scrollTop = scrollTop;
-                        holder.scrollLeft = scrollLeft;
-                        holder.dispatchEvent(new Event("scroll"));
-                    }
-                }
-            },
-            // The automatic width fits the header between its bounds; a dragged width is kept as is
-            modifyColWidth: function(width, colIdx) {
-                const userWidth = userWidths[fields[colIdx]];
-                if (userWidth) return userWidth;
-                if (typeof width !== "number") return width;
-                return Math.min(MAX_COL_WIDTH, Math.max(width, headerWidths[colIdx] || 0));
-            },
-            afterColumnResize: function(colIdx, width) {
-                if (fields[colIdx] !== undefined) userWidths[fields[colIdx]] = width;
-            },
+            manualColumnResize: true,
+            width: size.width,
+            height: size.height,
+            colWidths: fields.map((field, col) => keptWidths[field] || getColumnWidth(headers[col] || "", rows, col)),
             beforeOnCellMouseDown: function(event, coords) {
                 if (coords.row < 0) {
                     event.stopImmediatePropagation();
                 }
             }
         });
+        const newHolder = document.querySelector("#hot .ht_master .wtHolder");
+        if (newHolder) setListGridScroll(newHolder, left, top);
     }
 
     /**
@@ -1077,16 +1152,14 @@
             }
         }, 50000);
 
-        // The window may be resized before the first rows arrive
-        $(window).resize(function() {
-            if (scrapingState.data) renderHandsontable();
-        });
+        // The grid follows the window size, keeping its column widths
+        $(window).resize(fitListGrid);
 
         // Controls, messages and the column name box shown or hidden above the table move it
-        // down or up after it was drawn: draw it again to fit the window.
+        // down or up after it was drawn: fit it again to the window.
         const tableMoveObserver = new ResizeObserver(function() {
             if (!scrapingState.data || !$("#content").is(":visible")) return;
-            if ($("#hot").get(0).getBoundingClientRect().y !== scrapingState.tableTop) renderHandsontable();
+            if ($("#hot").get(0).getBoundingClientRect().y !== scrapingState.tableTop) fitListGrid();
         });
         $("#content .popup-content-body").children().not(":has(#hot)").each(function() {
             tableMoveObserver.observe(this);
@@ -1100,7 +1173,7 @@
     // that does not answer (one a crawl opened, still loading) is reloaded and searched again.
     $("#wrongTable").click(function() {
         if (scrapingState.scraping || scrapingState.roundPending || scrapingState.pageRound) return;
-        $("#hot").empty();
+        destroyListGrid();
         ["error", "finished", "previewLimit"].forEach(id => showStatusMessage("", id));
         chromeInstance.tabs.sendMessage(
             currentTab.id,
