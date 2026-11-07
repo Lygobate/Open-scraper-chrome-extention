@@ -2375,9 +2375,9 @@
     }
 
     /**
-     * Notes, after a page of a run, which fields showed late (a field only found by the last read
-     * before leaving the page counts as late) and which stayed absent after the full wait (see
-     * ABSENT_FIELD_PAGES).
+     * Notes, after a page of a run, which fields showed late (in Safe speed, a value that did not
+     * come from the final read, flash, counts as late) and which stayed absent after the full wait
+     * (see ABSENT_FIELD_PAGES).
      * @param {Array<{absentPages: number, skippedPages: number, recheckPages: number, late: boolean}>} learned - Per
      *     field, updated in place.
      * @param {boolean[]} awaited - Per field, whether the page waited for it.
