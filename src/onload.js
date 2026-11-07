@@ -842,9 +842,11 @@
     var layerBoxes = [];
     var layerFrame = 0;
     var layerTimer = 0;
-    // Active picker state (null when the picker is off), fields picked so far and pending poll callbacks
+    // Active picker state (null when the picker is off), fields picked so far (each with its
+    // number "seq", counted since the picker was turned on) and pending polls {known, sendResponse}
     var fieldPicker = null;
     var pickedFields = [];
+    var pickCount = 0;
     var pendingPickerPolls = [];
     // Pointer events aimed at the layer are stopped on the window in the capture phase, before the
     // page's own document and element listeners see them, then handed to the layer's handlers
@@ -1697,11 +1699,17 @@
     // --- Field picker ---
 
     /**
-     * Returns what the popup needs to know about the picker.
-     * @returns {{active: boolean, picks: Array<Object>}} Picker snapshot.
+     * Returns what the window needs to know about the picker: whether it is on, how many
+     * fields were picked since it was turned on, and the picks it has not received yet.
+     * @param {number} [known=0] - Number of picks the window already received.
+     * @returns {{active: boolean, count: number, picks: Array<Object>}} Picker snapshot.
      */
-    function getPickerSnapshot() {
-        return { active: !!fieldPicker, picks: pickedFields.slice() };
+    function getPickerSnapshot(known) {
+        return {
+            active: !!fieldPicker,
+            count: pickCount,
+            picks: pickedFields.filter(function(pick) { return pick.seq > (known || 0); })
+        };
     }
 
     /**
@@ -1710,7 +1718,49 @@
     function answerPickerPolls() {
         var polls = pendingPickerPolls;
         pendingPickerPolls = [];
-        polls.forEach(function(sendResponse) { sendResponse(getPickerSnapshot()); });
+        polls.forEach(function(poll) { poll.sendResponse(getPickerSnapshot(poll.known)); });
+    }
+
+    /**
+     * Tells whether a kind of value of an element is already selected.
+     * @param {Element} target - Element the value is read from.
+     * @param {string} kind - "text", "link" or "image".
+     * @returns {boolean} True when selected.
+     */
+    function isMarked(target, kind) {
+        return fieldPicker.marks.some(function(mark) { return mark.target === target && mark.kind === kind; });
+    }
+
+    /**
+     * Records a selected value and shows its element as selected (green).
+     * @param {string} id - Pick id ("p1"...) or field id of the template being edited.
+     * @param {string} kind - "text", "link" or "image".
+     * @param {Element} target - Element the value is read from.
+     * @param {Element} element - Element that gets the green box.
+     * @param {Object} [field] - Field shown by the box.
+     */
+    function addMark(id, kind, target, element, field) {
+        fieldPicker.marks.push({ id: id, kind: kind, target: target, element: element });
+        if (!layerBoxes.some(function(entry) { return entry.kind === "picked" && entry.element === element; })) {
+            addLayerBox(element, "picked", field);
+        }
+    }
+
+    /**
+     * Unselects a field removed in the window while picking: its green box goes (unless another
+     * selected value shares it) and its element can be picked again.
+     * @param {string} id - Pick id or field id (see addMark).
+     */
+    function removeMark(id) {
+        if (!fieldPicker) return;
+        pickedFields = pickedFields.filter(function(pick) { return pick.id !== id; });
+        fieldPicker.pendingFields = fieldPicker.pendingFields.filter(function(field) { return field.id !== id; });
+        var removed = fieldPicker.marks.filter(function(mark) { return mark.id === id; });
+        fieldPicker.marks = fieldPicker.marks.filter(function(mark) { return mark.id !== id; });
+        removed.forEach(function(mark) {
+            if (fieldPicker.marks.some(function(other) { return other.element === mark.element; })) return;
+            removeLayerBoxes(function(entry) { return entry.kind === "picked" && entry.element === mark.element; });
+        });
     }
 
     /**
@@ -1904,13 +1954,13 @@
     /**
      * Adds the fields of the hovered element: its text, its link and its image, when present.
      * The link field targets the link element itself and the image field the media element
-     * itself. The same kind of value of the same element is never added twice.
+     * itself. The same kind of value of the same element is never added twice (unless it was
+     * removed in the window meanwhile). Waiting polls are answered at once.
      */
     function pickHoveredElement() {
         var info = getHoveredInfo();
         if (!info) return;
         var name = suggestFieldName(info.element);
-        var added = 0;
         [
             ["text", info.element, getInfoText(info), ""],
             ["link", info.linkElement, info.link, " link"],
@@ -1918,19 +1968,14 @@
         ].forEach(function(entry) {
             var kind = entry[0];
             var target = entry[1];
-            if (!target || !entry[2]) return;
-            var kinds = fieldPicker.pickedKinds.get(target) || [];
-            if (kinds.indexOf(kind) !== -1) return;
+            if (!target || !entry[2] || isMarked(target, kind)) return;
             var selectors = buildFieldSelectors(target);
             if (!selectors.length) return;
-            pickedFields.push({ name: name + entry[3], kind: kind, selectors: selectors, sample: entry[2].slice(0, 300) });
-            kinds.push(kind);
-            fieldPicker.pickedKinds.set(target, kinds);
-            added++;
+            var seq = ++pickCount;
+            var id = "p" + seq;
+            pickedFields.push({ id: id, seq: seq, name: name + entry[3], kind: kind, selectors: selectors, sample: entry[2].slice(0, 300) });
+            addMark(id, kind, target, info.element);
         });
-        if (added && !layerBoxes.some(function(entry) { return entry.kind === "picked" && entry.element === info.element; })) {
-            addLayerBox(info.element, "picked");
-        }
         answerPickerPolls();
     }
 
@@ -2145,7 +2190,7 @@
      * Shows the fields a template already has as selected (green) when they are found in the
      * page, and keeps them from being added again. Fields not found yet (pages that draw their
      * content late, or after a scroll) are looked for again while the picker is on.
-     * @param {Array<{kind: string, selectors: string[]}>} [fields] - Fields of the template.
+     * @param {Array<{id: string, kind: string, selectors: string[]}>} [fields] - Fields of the template.
      */
     function markExistingFields(fields) {
         fieldPicker.pendingFields = (Array.isArray(fields) ? fields : []).slice();
@@ -2163,12 +2208,7 @@
         fieldPicker.pendingFields = fieldPicker.pendingFields.filter(function(field) {
             var element = resolveField(field).element;
             if (!element) return true;
-            var kinds = fieldPicker.pickedKinds.get(element) || [];
-            if (kinds.indexOf(field.kind) === -1) kinds.push(field.kind);
-            fieldPicker.pickedKinds.set(element, kinds);
-            if (!layerBoxes.some(function(entry) { return entry.kind === "picked" && entry.element === element; })) {
-                addLayerBox(element, "picked", field);
-            }
+            addMark(field.id, field.kind, element, element, field);
             return false;
         });
         if (!fieldPicker.pendingFields.length) clearInterval(fieldPicker.pendingTimer);
@@ -2184,6 +2224,7 @@
         clearLayerBoxes("found");
         clearLayerBoxes("picked");
         pickedFields = [];
+        pickCount = 0;
         var parts = getLayer();
         parts.dim.hidden = false;
         parts.catcher.hidden = false;
@@ -2200,7 +2241,8 @@
             scrollFrame: 0,
             pendingFields: [],
             pendingTimer: 0,
-            pickedKinds: new Map(),
+            // Selected values {id, kind, target, element}: picks and the template's fields found
+            marks: [],
             port: null
         };
         markExistingFields(existing);
@@ -2679,16 +2721,22 @@
                 sendResponse({ ok: true, url: window.location.href, doc: DOCUMENT_TOKEN });
                 break;
             case "detailsPickerPoll":
-                // Long poll: answered at once if something changed, else on the next pick or stop
-                if (!fieldPicker || message.known !== pickedFields.length) {
-                    sendResponse(getPickerSnapshot());
+                // Long poll: answered at once if something changed, else on the next pick or stop,
+                // so each pick reaches the window as soon as it is made
+                if (!fieldPicker || message.known !== pickCount) {
+                    sendResponse(getPickerSnapshot(message.known));
                 } else {
-                    pendingPickerPolls.push(sendResponse);
+                    pendingPickerPolls.push({ known: message.known, sendResponse: sendResponse });
                 }
+                break;
+            case "detailsPickerRemove":
+                // A field removed in the window while picking
+                removeMark(message.id);
+                sendResponse({ ok: true });
                 break;
             case "detailsPickerStop":
                 stopFieldPicker();
-                sendResponse(getPickerSnapshot());
+                sendResponse(getPickerSnapshot(message.known));
                 break;
             case "detailsPreview":
                 // Scrolls through the page first with "Load full page", waits for the page to
