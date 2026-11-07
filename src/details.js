@@ -861,6 +861,16 @@
     }
 
     /**
+     * Returns the read speed of a template: "safe" only when it says so (Fast is the default, also
+     * for templates saved before the option existed).
+     * @param {*} speed - Saved value.
+     * @returns {"fast"|"safe"} Speed.
+     */
+    function normalizeSpeed(speed) {
+        return speed === "safe" ? "safe" : "fast";
+    }
+
+    /**
      * Brings two wait bounds in range: integers >= 0 with min <= max.
      * @param {*} wait - Raw {min, max}.
      * @returns {{min: number, max: number}} Bounds in seconds.
@@ -915,6 +925,8 @@
             wait: normalizeWait(raw.wait),
             // "Load full page": off for templates saved before it existed
             fullPage: raw.fullPage === true,
+            // Fast (default) or Safe: see the Options of the run
+            speed: normalizeSpeed(raw.speed),
             renames: renames,
             createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,
             updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : now
@@ -1126,8 +1138,8 @@
 
     /**
      * Saves a new template and selects it. Its name is made unique on its domain.
-     * @param {{domain: string, name: string, fields: Object[], wait: Object, fullPage: boolean, renames: Object}} props -
-     *     Content of the template (wait, fullPage and renames are optional).
+     * @param {{domain: string, name: string, fields: Object[], wait: Object, fullPage: boolean, speed: string, renames: Object}} props -
+     *     Content of the template (wait, fullPage, speed and renames are optional).
      * @returns {Promise<Object|null>} Saved template, or null when it could not be saved.
      */
     async function addTemplate(props) {
@@ -1140,6 +1152,7 @@
             fields: props.fields,
             wait: normalizeWait(props.wait || DEFAULT_WAIT),
             fullPage: props.fullPage === true,
+            speed: normalizeSpeed(props.speed),
             renames: props.renames || {},
             createdAt: now,
             updatedAt: now
@@ -1176,7 +1189,7 @@
     async function duplicateTemplate(template) {
         const copy = JSON.parse(JSON.stringify(template));
         const created = await addTemplate({ domain: copy.domain, name: copy.name + " (copy)", fields: copy.fields, wait: copy.wait,
-            fullPage: copy.fullPage, renames: copy.renames });
+            fullPage: copy.fullPage, speed: copy.speed, renames: copy.renames });
         if (created) showMessage("detailsPickMessage", "Template \"" + template.name + "\" duplicated as \"" + created.name + "\".");
     }
 
@@ -1261,6 +1274,7 @@
                 fields: template.fields,
                 wait: template.wait,
                 fullPage: template.fullPage,
+                speed: template.speed,
                 renames: template.renames,
                 createdAt: template.createdAt,
                 updatedAt: template.updatedAt
@@ -2005,14 +2019,15 @@
     // --- Step 3: run ---
 
     /**
-     * Shows the options of a template (wait bounds, "Load full page") in the inputs.
-     * @param {{wait: Object, fullPage: boolean}} template - Template.
+     * Shows the options of a template (wait bounds, "Load full page", Fast/Safe) in the inputs.
+     * @param {{wait: Object, fullPage: boolean, speed: string}} template - Template.
      */
     function applyOptionsToInputs(template) {
         const bounds = normalizeWait(template.wait);
         $id("detailsMinWait").value = String(bounds.min);
         $id("detailsMaxWait").value = String(bounds.max);
         $id("detailsFullPage").checked = template.fullPage === true;
+        showSpeed(normalizeSpeed(template.speed));
         updateOptionsSummary();
     }
 
@@ -2049,7 +2064,7 @@
     }
 
     /**
-     * Writes the options in the header of the closed options panel ("Wait 2–30 s · Load full page: off").
+     * Writes the options in the header of the closed options panel ("Wait 2–30 s · Load full page: off · Fast").
      */
     function updateOptionsSummary() {
         const wait = getWait();
@@ -2058,7 +2073,39 @@
         state.className = on ? "is-on" : "is-off";
         state.textContent = on ? "on" : "off";
         $id("detailsOptionsSummary").replaceChildren("Wait " + (wait.min === wait.max ? wait.min : wait.min + "–" + wait.max) +
-            " s · Load full page: ", state);
+            " s · Load full page: ", state, " · " + (getSpeed() === "safe" ? "Safe" : "Fast"));
+    }
+
+    /**
+     * Reads the Fast / Safe choice of the options.
+     * @returns {"fast"|"safe"} Speed.
+     */
+    function getSpeed() {
+        const active = document.querySelector(".osd-seg[data-speed].is-active");
+        return normalizeSpeed(active && active.dataset.speed);
+    }
+
+    /**
+     * Marks one of the Fast / Safe buttons as the chosen one.
+     * @param {"fast"|"safe"} speed - Speed to show.
+     */
+    function showSpeed(speed) {
+        document.querySelectorAll(".osd-seg[data-speed]").forEach(button => {
+            const active = button.dataset.speed === speed;
+            button.classList.toggle("is-active", active);
+            button.setAttribute("aria-pressed", String(active));
+        });
+    }
+
+    /**
+     * Saves the Fast / Safe choice in the template.
+     * @param {"fast"|"safe"} speed - Speed chosen.
+     */
+    function onSpeedChanged(speed) {
+        showSpeed(speed);
+        updateOptionsSummary();
+        const template = getSelectedTemplate();
+        if (template) updateTemplate(template.id, t => { t.speed = speed; });
     }
 
     /**
@@ -2229,7 +2276,7 @@
         $id("tabList").disabled = state.running;
         $id("tabDetails").disabled = state.running;
         document.querySelectorAll(".osd-seg[data-source]").forEach(button => { button.disabled = busy; });
-        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinWait", "detailsMaxWait", "detailsFullPage", "detailsToStep2"].forEach(id => {
+        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinWait", "detailsMaxWait", "detailsFullPage", "detailsSpeedFast", "detailsSpeedSafe", "detailsToStep2"].forEach(id => {
             $id(id).disabled = busy || (id === "detailsToStep2" && !state.validUrls.length);
         });
         renderTemplateSelect();
@@ -2761,6 +2808,9 @@
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
     $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
     $id("detailsFullPage").addEventListener("change", onFullPageChanged);
+    document.querySelectorAll(".osd-seg[data-speed]").forEach(button => {
+        button.addEventListener("click", () => onSpeedChanged(normalizeSpeed(button.dataset.speed)));
+    });
     initInfoTips();
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
     ["mousedown", "click"].forEach(type => $id("detailsHot").addEventListener(type, onGridHeaderAction, true));
