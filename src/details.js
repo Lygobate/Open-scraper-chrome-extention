@@ -1562,6 +1562,8 @@
         // With "Load full page" (or the reload button), the first read scrolls through the page
         // first, like a run
         const scrollFirst = template.fullPage || !!(options && options.fullPage);
+        // A hidden tab draws nothing, so its lazy content would never load while scrolling
+        if (scrollFirst) await showTargetTabIfHidden();
         // Read at once, then, if fields are missing, again once they show (or the wait ends)
         for (const waitMs of [0, LATE_FIELDS_WAIT_MS]) {
             const fullPage = scrollFirst && !waitMs;
