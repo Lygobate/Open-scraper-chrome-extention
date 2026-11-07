@@ -20,9 +20,9 @@
     // After opening a URL, the page is not asked anything before its load begins or this delay
     // has passed (a change of the #fragment only begins no load)
     const LOAD_START_WAIT_MS = 300;
-    // Once a page has loaded (and Min has passed), longest extra wait for the fields not shown
-    // yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
-    // every field are read at once.
+    // Safe speed: once a page has loaded (and Min has passed), longest extra wait for the fields not
+    // shown yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
+    // every field are read at once. Fast reads once the page has loaded and Min has passed, whatever is missing.
     const LATE_FIELDS_WAIT_MS = 5000;
     // Longest wait for the page shown to tell which document it is, before a run opens the next URL
     const OLD_DOCUMENT_PING_MS = 500;
@@ -2324,10 +2324,11 @@
             const row = { url: state.urls[index], values: {}, failed: false };
             if (isUsableUrl(url)) {
                 // The page takes at least Min seconds and at most about Max seconds. It is read
-                // once parsed: the content script waits for Min and for the fields drawn late,
-                // after scrolling through the page with "Load full page".
+                // once parsed: the content script waits for Min and the load, then reads at once (Fast) or also
+                // waits for the fields drawn late (Safe), after scrolling through the page with "Load full page".
                 const wait = getWait();
                 const fullPage = $id("detailsFullPage").checked;
+                const safe = getSpeed() === "safe";
                 const pageStart = Date.now();
                 const limitMs = Math.max(1, wait.max) * 1000;
                 const minEnd = pageStart + wait.min * 1000;
@@ -2338,16 +2339,17 @@
                 let response;
                 if (ready) {
                     if (fullPage) await showTargetTabIfHidden();
-                    const awaited = learned.map(field => field.late || field.absentPages < ABSENT_FIELD_PAGES ||
+                    // Fast waits for no field, so it learns nothing about the absent ones
+                    const awaited = learned.map(field => !safe || field.late || field.absentPages < ABSENT_FIELD_PAGES ||
                         field.skippedPages >= field.recheckPages);
                     response = await Promise.race([
                         sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, awaited: awaited, fullPage: fullPage,
-                            notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: LATE_FIELDS_WAIT_MS,
+                            speed: safe ? "safe" : "fast", notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: safe ? LATE_FIELDS_WAIT_MS : 0,
                             limitMs: Math.max(0, pageStart + limitMs - Date.now()) }, 2000, isStopped),
                         stopped.then(() => undefined)
                     ]);
                     if (isStopped()) return;
-                    if (response && response.ok && Array.isArray(response.values)) learnFields(learned, awaited, response);
+                    if (safe && response && response.ok && Array.isArray(response.values)) learnFields(learned, awaited, response);
                 }
                 if (Date.now() < minEnd) {
                     // Error page or no answer: the page still takes Min seconds

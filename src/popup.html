@@ -216,14 +216,14 @@
                         <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="1" value="30"></label>
                         <span class="osd-hint osd-hint-inline">seconds</span>
                     </div>
-                    <p class="osd-hint">Min is the shortest a page takes (raise it for pages that show their content late), Max the longest. Fast reads each page once Min has passed. Safe also waits for the page to finish loading and for missing fields to show.</p>
+                    <p class="osd-hint">Min is the shortest a page takes (raise it for pages that show their content late), Max the longest. Fast reads each page once it has loaded and Min has passed. Safe also waits for the page to finish loading and for missing fields to show.</p>
                     <div class="osd-row">
                         <span class="osd-label">Speed</span>
                         <div class="osd-segmented" role="group" aria-label="Fast or Safe" aria-describedby="detailsSpeedInfo">
                             <button type="button" class="osd-seg is-active" id="detailsSpeedFast" data-speed="fast" aria-pressed="true">Fast</button>
                             <button type="button" class="osd-seg" id="detailsSpeedSafe" data-speed="safe" aria-pressed="false">Safe</button>
                         </div>
-                        <span class="osd-info" id="detailsSpeedInfo" tabindex="0" role="note" data-tip="Fast reads each page as soon as Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete." aria-label="Fast reads each page as soon as Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete.">i</span>
+                        <span class="osd-info" id="detailsSpeedInfo" tabindex="0" role="note" data-tip="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete." aria-label="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete.">i</span>
                     </div>
                     <div class="osd-row">
                         <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read.">
