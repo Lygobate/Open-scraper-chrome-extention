@@ -455,6 +455,9 @@
         const filledCounts = previewData.fields.map((_, col) => previewData.data.filter(row => isFilledCell(row[col])).length);
         const headers = applyHeaderRenames(previewData.fields);
         const headerWidths = headers.map(getHeaderWidth);
+        // Widths set by dragging a header edge, by field so they survive every re-render
+        const userWidths = scrapingState.columnWidths || (scrapingState.columnWidths = {});
+        const fields = previewData.fields;
         previewData.data = previewData.data.slice(0, PREVIEW_LIMIT);
         scrapingState.previewLength = previewData.data.length;
         scrapingState.gridFields = previewData.fields;
@@ -485,7 +488,7 @@
             rowHeaders: previewData.fields.length > 0,
             columnHeaderHeight: GRID_HEADER_HEIGHT,
             wordWrap: false,
-            manualColumnResize: true,
+            manualColumnResize: fields.map(field => userWidths[field]),
             width: $(window).width() - 20,
             height: $(window).height() - $("#hot").get(0).getBoundingClientRect().y - footerHeight - GRID_BOTTOM_SPACE,
             afterRender: function() {
@@ -500,9 +503,15 @@
                     }
                 }
             },
+            // The automatic width fits the header between its bounds; a dragged width is kept as is
             modifyColWidth: function(width, colIdx) {
+                const userWidth = userWidths[fields[colIdx]];
+                if (userWidth) return userWidth;
                 if (typeof width !== "number") return width;
                 return Math.min(MAX_COL_WIDTH, Math.max(width, headerWidths[colIdx] || 0));
+            },
+            afterColumnResize: function(colIdx, width) {
+                if (fields[colIdx] !== undefined) userWidths[fields[colIdx]] = width;
             },
             beforeOnCellMouseDown: function(event, coords) {
                 if (coords.row < 0) {
