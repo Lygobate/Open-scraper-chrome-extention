@@ -6,16 +6,47 @@
     --mode-tabs-height: 44px;
 }
 
-/* === MODE TABS === */
+/* === APP HEADER: logo and name on the left, mode tabs on the right === */
 
 .mode-tabs {
     display: flex;
     align-items: center;
-    gap: var(--space-xs);
+    justify-content: space-between;
+    gap: var(--space-md);
     height: var(--mode-tabs-height);
-    padding: 0 10px;
+    padding: 0 10px 0 12px;
     border-bottom: 1px solid var(--border-glass);
     background: var(--bg-deep);
+}
+
+.app-brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-width: 0;
+}
+
+.app-logo {
+    flex: none;
+    width: 22px;
+    height: 22px;
+}
+
+.app-name {
+    overflow: hidden;
+    font-family: var(--font-family);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.mode-tabs-list {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-xs);
 }
 
 .mode-tab {
