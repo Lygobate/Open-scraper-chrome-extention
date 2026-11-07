@@ -597,6 +597,21 @@
     }
 
     /**
+     * Makes the target tab the shown one of its window when it is hidden (another tab in
+     * front): a hidden page draws nothing, so its lazy content never loads while scrolling.
+     * The window is not brought to the front.
+     */
+    async function showTargetTabIfHidden() {
+        const ping = await sendToTab({ action: "detailsPing" });
+        if (!ping || ping.visibility !== "hidden") return;
+        try {
+            await chromeInstance.tabs.update(targetTabId, { active: true });
+        } catch (error) {
+            // Closed meanwhile
+        }
+    }
+
+    /**
      * Opens a URL in the target tab and waits until the page has loaded and its content script
      * answers, with a time limit. The new page counts as loaded once the tab reported "loading"
      * then "complete" (the tab status alone can still describe the previous page for a moment,
@@ -2200,6 +2215,7 @@
                 if (isStopped()) return;
                 let response;
                 if (ready) {
+                    if (fullPage) await showTargetTabIfHidden();
                     const awaited = learned.map(field => field.late || field.absentPages < ABSENT_FIELD_PAGES ||
                         field.skippedPages >= ABSENT_FIELD_RECHECK_PAGES);
                     response = await Promise.race([
