@@ -26,10 +26,12 @@
     const LATE_FIELDS_WAIT_MS = 5000;
     // Longest wait for the page shown to tell which document it is, before a run opens the next URL
     const OLD_DOCUMENT_PING_MS = 500;
-    // A field found empty after the full wait on this many pages in a row, and never drawn late
-    // during the run, stops holding the next pages up (it is still read when a page shows it at
-    // once or before Min ends). It is waited for again on one page after every
-    // ABSENT_FIELD_RECHECK_PAGES pages, and for good once seen drawn late.
+    // A field found empty after the full wait on this many pages, and never drawn late during
+    // the run, stops holding the next pages up (it is still read when a page shows it at once or
+    // before Min ends): a page that shows it at once says nothing of whether it is drawn late, so
+    // an optional field counts like an absent one. It is waited for again on one page after every
+    // ABSENT_FIELD_RECHECK_PAGES pages (twice as many after each recheck that finds it absent
+    // again), and for good once seen drawn late.
     const ABSENT_FIELD_PAGES = 3;
     const ABSENT_FIELD_RECHECK_PAGES = 10;
     // Space kept under the results grid (paddings of the panel and of the step), and the delay
@@ -2206,7 +2208,7 @@
         const isStopped = () => runId !== state.runId;
         const fields = template.fields.map(field => ({ id: field.id, kind: field.kind, selectors: field.selectors }));
         // What the run learns of each field (see ABSENT_FIELD_PAGES)
-        const learned = fields.map(() => ({ absentPages: 0, skippedPages: 0, late: false }));
+        const learned = fields.map(() => ({ absentPages: 0, skippedPages: 0, recheckPages: ABSENT_FIELD_RECHECK_PAGES, late: false }));
         // Token of the document the tab shows after the last page, so that the next one needs no
         // question to the page before it opens (null: not known)
         let pageDoc = null;
@@ -2236,7 +2238,7 @@
                 let response;
                 if (ready) {
                     const awaited = learned.map(field => field.late || field.absentPages < ABSENT_FIELD_PAGES ||
-                        field.skippedPages >= ABSENT_FIELD_RECHECK_PAGES);
+                        field.skippedPages >= field.recheckPages);
                     response = await Promise.race([
                         sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, awaited: awaited, fullPage: fullPage,
                             notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: LATE_FIELDS_WAIT_MS,
@@ -2272,7 +2274,7 @@
     /**
      * Notes, after a page of a run, which fields showed late and which stayed absent after the
      * full wait (see ABSENT_FIELD_PAGES).
-     * @param {Array<{absentPages: number, skippedPages: number, late: boolean}>} learned - Per
+     * @param {Array<{absentPages: number, skippedPages: number, recheckPages: number, late: boolean}>} learned - Per
      *     field, updated in place.
      * @param {boolean[]} awaited - Per field, whether the page waited for it.
      * @param {{values: Array, complete: boolean, late: boolean[]}} response - Page answer.
@@ -2283,8 +2285,11 @@
                 field.late = true;
                 field.absentPages = 0;
             } else if (awaited[i]) {
-                if (response.values[i]) field.absentPages = 0;
-                else if (!response.complete) field.absentPages++;
+                if (!response.values[i] && !response.complete) {
+                    // A recheck that finds the field absent again is made less often
+                    if (field.absentPages >= ABSENT_FIELD_PAGES) field.recheckPages *= 2;
+                    field.absentPages++;
+                }
                 field.skippedPages = 0;
             } else {
                 field.skippedPages++;
