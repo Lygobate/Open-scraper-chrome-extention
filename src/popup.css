@@ -97,24 +97,6 @@ body {
     gap: var(--space-sm);
 }
 
-.list-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 10px;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    background: var(--bg-glass);
-    border: 1px solid var(--border-glass);
-    border-radius: var(--radius-full);
-}
-
-.list-badge .glyphicon {
-    font-size: 10px;
-    color: var(--accent-emerald);
-}
-
 #info .osd-message {
     margin-top: 8px;
 }
