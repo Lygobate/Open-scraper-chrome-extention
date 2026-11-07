@@ -2375,16 +2375,17 @@
     }
 
     /**
-     * Notes, after a page of a run, which fields showed late and which stayed absent after the
-     * full wait (see ABSENT_FIELD_PAGES).
+     * Notes, after a page of a run, which fields showed late (a field only found by the last read
+     * before leaving the page counts as late) and which stayed absent after the full wait (see
+     * ABSENT_FIELD_PAGES).
      * @param {Array<{absentPages: number, skippedPages: number, recheckPages: number, late: boolean}>} learned - Per
      *     field, updated in place.
      * @param {boolean[]} awaited - Per field, whether the page waited for it.
-     * @param {{values: Array, complete: boolean, late: boolean[]}} response - Page answer.
+     * @param {{values: Array, complete: boolean, late: boolean[], flash: boolean[]}} response - Page answer.
      */
     function learnFields(learned, awaited, response) {
         learned.forEach((field, i) => {
-            if (response.late && response.late[i]) {
+            if ((response.late && response.late[i]) || (response.flash && response.flash[i])) {
                 field.late = true;
                 field.absentPages = 0;
             } else if (awaited[i]) {

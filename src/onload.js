@@ -2760,8 +2760,25 @@
                             // had stopped growing: a field still missing is absent, not waited for again
                             return read(Math.max(0, minMs - (Date.now() - started)), !!(scroll && scroll.bottom && !scroll.cancelled));
                         }).then(function(result) {
-                            sendResponse({ ok: true, status: status, url: window.location.href, values: result.values,
-                                complete: result.complete, late: result.late, waitedMs: Date.now() - started, scroll: scroll });
+                            var values = result.values;
+                            var complete = result.complete;
+                            var flash = values.map(function() { return false; });
+                            if (message.speed !== "fast") {
+                                // Safe: one more read right before leaving the page (the page may have drawn or
+                                // redrawn a field since the last check). The latest non-empty value wins; an
+                                // empty read never erases an earlier value.
+                                var latest = extractPageDetails(fields);
+                                values = values.map(function(value, i) {
+                                    if (!latest[i]) return value;
+                                    flash[i] = !value;
+                                    return latest[i];
+                                });
+                                complete = values.every(function(value, i) {
+                                    return (Array.isArray(message.awaited) && message.awaited[i] === false) || !!value;
+                                });
+                            }
+                            sendResponse({ ok: true, status: status, url: window.location.href, values: values,
+                                complete: complete, late: result.late, flash: flash, waitedMs: Date.now() - started, scroll: scroll });
                         }).catch(function(e) {
                             sendResponse({ error: String(e && e.message || e) });
                         });
