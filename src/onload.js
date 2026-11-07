@@ -2726,8 +2726,8 @@
                         var scroll = null;
                         // Time left before the Max limit of the run (negative limit: not given)
                         var timeLeft = function() { return limitMs >= 0 ? Math.max(0, limitMs - (Date.now() - started)) : 30000; };
-                        var read = function(minWait) {
-                            return waitForRunFields(fields, Object.assign({}, message, {
+                        var read = function(minWait, noLateWait) {
+                            return waitForRunFields(fields, Object.assign({}, message, noLateWait ? { lateMs: 0 } : {}, {
                                 notBeforeMs: minWait,
                                 limitMs: scroll && scroll.cancelled ? 0 : (limitMs >= 0 ? timeLeft() : limitMs)
                             }));
@@ -2737,7 +2737,9 @@
                         var scrolled = message.fullPage ? scrollThroughPage(timeLeft(), minMs) : Promise.resolve(null);
                         scrolled.then(function(result) {
                             scroll = result;
-                            return read(Math.max(0, minMs - (Date.now() - started)));
+                            // The scroll reached the end after the Min wait and the page load, and the page
+                            // had stopped growing: a field still missing is absent, not waited for again
+                            return read(Math.max(0, minMs - (Date.now() - started)), !!(scroll && scroll.bottom && !scroll.cancelled));
                         }).then(function(result) {
                             sendResponse({ ok: true, status: status, url: window.location.href, values: result.values,
                                 complete: result.complete, late: result.late, waitedMs: Date.now() - started, scroll: scroll });
