@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const INCLUDE = ["manifest.json", "_locales", "css", "fonts", "js", "src", "icon16.png", "icon32.png", "icon64.png", "icon128.png", "options_bg.png", "PRIVACY.md"];
+const INCLUDE = ["manifest.json", "_locales", "css", "fonts", "js", "src", "icon16.png", "icon32.png", "icon64.png", "icon128.png", "PRIVACY.md"];
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
