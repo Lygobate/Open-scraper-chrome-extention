@@ -1001,6 +1001,14 @@ body.mode-details .details-panel {
     text-overflow: ellipsis;
 }
 
+.osd-options-summary .is-on {
+    color: var(--accent-emerald);
+}
+
+.osd-options-summary .is-off {
+    color: var(--accent-rose);
+}
+
 .osd-options[open] .osd-options-summary {
     display: none;
 }

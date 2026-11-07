@@ -2053,8 +2053,12 @@
      */
     function updateOptionsSummary() {
         const wait = getWait();
-        $id("detailsOptionsSummary").textContent = "Wait " + (wait.min === wait.max ? wait.min : wait.min + "–" + wait.max) +
-            " s · Load full page: " + ($id("detailsFullPage").checked ? "on" : "off");
+        const on = $id("detailsFullPage").checked;
+        const state = document.createElement("span");
+        state.className = on ? "is-on" : "is-off";
+        state.textContent = on ? "on" : "off";
+        $id("detailsOptionsSummary").replaceChildren("Wait " + (wait.min === wait.max ? wait.min : wait.min + "–" + wait.max) +
+            " s · Load full page: ", state);
     }
 
     /**
