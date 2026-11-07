@@ -10,10 +10,16 @@
     <link rel="stylesheet" href="details.css">
 </head>
 <body>
-    <div id="modeTabs" class="mode-tabs" role="tablist" aria-label="Extraction mode">
-        <button id="tabList" class="mode-tab is-active" role="tab" type="button" aria-selected="true" aria-controls="content">Extract list</button>
-        <button id="tabDetails" class="mode-tab" role="tab" type="button" aria-selected="false" aria-controls="detailsPanel">Extract page details</button>
-    </div>
+    <header id="modeTabs" class="mode-tabs app-header">
+        <div class="app-brand">
+            <img src="../icon128.png" class="app-logo" width="22" height="22" alt="">
+            <span class="app-name">Open Scraper</span>
+        </div>
+        <div class="mode-tabs-list" role="tablist" aria-label="Extraction mode">
+            <button id="tabList" class="mode-tab is-active" role="tab" type="button" aria-selected="true" aria-controls="content">Extract list</button>
+            <button id="tabDetails" class="mode-tab" role="tab" type="button" aria-selected="false" aria-controls="detailsPanel">Extract page details</button>
+        </div>
+    </header>
     <div id="wait">
         <h1 id="waitHeader">Please wait...</h1>
         <div id="noResponseErr" class="osd-message osd-message-error" style="display: none;"></div>
@@ -59,7 +65,6 @@
                 </div>
                 <div class="osd-row osd-results-head list-results-head">
                     <span class="osd-count" id="listRowCount"></span>
-                    <span id="help" class="list-badge"><span class="glyphicon glyphicon-info-sign"></span> Private Local Mode</span>
                     <span class="osd-grow"></span>
                     <button type="button" id="extractEachUrl" class="osd-btn osd-btn-accent extract-each-url" hidden>Extract each URL</button>
                     <button type="button" class="osd-btn osd-btn-warning" id="resetColumns" title="Show the deleted columns again" style="display: none;">Reset columns</button>
