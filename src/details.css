@@ -374,6 +374,15 @@ body.mode-details .details-panel {
     border-color: rgba(244, 63, 94, 0.35);
 }
 
+.osd-btn.osd-btn-retry {
+    flex: 0 0 auto;
+    height: 36px;
+    padding: 0 12px;
+    color: var(--accent-amber);
+    background: var(--accent-amber-dim);
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
 .osd-btn.osd-btn-reset:hover:not(:disabled) {
     color: #fff;
     background: var(--accent-rose);

@@ -109,6 +109,10 @@
         nextIndex: 0,
         extracted: 0,
         failed: 0,
+        // Retry of the pages that could not be read: indexes of the rows left to visit again (null
+        // when no retry is under way), and pages visited again so far (counted in the speed)
+        retryQueue: null,
+        retried: 0,
         running: false,
         runId: 0,
         resolveStop: null,
@@ -2184,6 +2188,8 @@
         state.nextIndex = 0;
         state.extracted = 0;
         state.failed = 0;
+        state.retryQueue = null;
+        state.retried = 0;
         state.elapsedMs = 0;
         state.speed = "";
         showMessage("detailsRunMessage", "");
@@ -2233,19 +2239,21 @@
     }
 
     /**
-     * Works out the speed shown once a row is added: rows per minute of run time (the time
-     * while stopped does not count, as in the duration).
+     * Works out the speed shown once a row is added or filled again: pages per minute of run
+     * time (the time while stopped does not count, as in the duration; pages visited again by a
+     * retry count).
      */
     function updateSpeed() {
         const minutes = getElapsedMs() / 60000;
-        state.speed = minutes > 0 ? (state.results.length / minutes).toFixed(1) + " / min" : "";
+        state.speed = minutes > 0 ? ((state.results.length + state.retried) / minutes).toFixed(1) + " / min" : "";
     }
 
     /**
-     * Counts the valid URLs not visited yet.
+     * Counts the valid URLs not visited yet (during a retry, the pages left to visit again).
      * @returns {number} Remaining pages.
      */
     function getRemaining() {
+        if (state.retryQueue) return state.retryQueue.length;
         return state.urls.slice(state.nextIndex).filter(url => isUsableUrl(url.trim())).length;
     }
 
@@ -2263,6 +2271,10 @@
         toggle.classList.toggle("osd-btn-danger", state.running);
         toggle.disabled = !state.running && (state.picking || !canOpenStep(3));
         $id("detailsReset").disabled = isBusy() || !hasRunProgress();
+        const retry = $id("detailsRetryFailed");
+        retry.hidden = !state.failed;
+        retry.disabled = isBusy();
+        retry.textContent = "Retry failed pages (" + state.failed + ")";
         if ($id("detailsReset").disabled) closePrompt("detailsResetPrompt");
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
@@ -2310,10 +2322,14 @@
     }
 
     /**
-     * Starts the run or resumes it at the next page to visit.
+     * Starts the run or resumes it at the next page to visit. With retry, visits again only the
+     * pages that could not be read, in order, and fills their rows in place (the run itself
+     * still resumes where it was on Start).
+     * @param {{retry: boolean}} [options] - retry: visit the failed pages again.
      */
-    async function startRun() {
-        if (isBusy()) return;
+    async function startRun(options) {
+        const retry = !!(options && options.retry);
+        if (isBusy() || (retry && !state.failed)) return;
         closePrompt("detailsResetPrompt");
         if (isListCrawlRunning()) {
             showMessage("detailsRunMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
@@ -2325,7 +2341,7 @@
             showMessage("detailsRunMessage", "The target tab was closed. Close this window and click the extension icon again.", "error");
             return;
         }
-        if (state.nextIndex >= state.urls.length) resetResults();
+        if (!retry && state.nextIndex >= state.urls.length) resetResults();
 
         sendToTab({ action: "detailsClearHighlights" });
         const runId = ++state.runId;
@@ -2337,16 +2353,19 @@
         // Token of the document the tab shows after the last page, so that the next one needs no
         // question to the page before it opens (null: not known)
         let pageDoc = null;
+        // Rows to visit: the next URLs, or the rows that failed (retry)
+        state.retryQueue = retry ? state.results.map((row, i) => (row.failed ? i : -1)).filter(i => i >= 0) : null;
         state.running = true;
         state.runStartedAt = Date.now();
         state.ticker = setInterval(updateRunUi, 1000);
         showMessage("detailsRunMessage", "");
         updateBusyUi();
 
-        while (state.nextIndex < state.urls.length) {
-            const index = state.nextIndex;
-            const url = state.urls[index].trim();
-            const row = { url: state.urls[index], values: {}, failed: false };
+        for (;;) {
+            const index = retry ? (state.retryQueue.length ? state.retryQueue[0] : -1) : (state.nextIndex < state.urls.length ? state.nextIndex : -1);
+            if (index < 0) break;
+            const row = { url: retry ? state.results[index].url : state.urls[index], values: {}, failed: false };
+            const url = String(row.url).trim();
             if (isUsableUrl(url)) {
                 // The page takes at least Min seconds and at most about Max seconds. It is read
                 // once parsed: the content script waits for Min and the load, then reads at once (Fast) or also
@@ -2389,10 +2408,19 @@
                     state.failed++;
                 }
             }
-            state.results.push(row);
-            state.nextIndex = index + 1;
+            if (retry) {
+                // The row replaced was a failed one; the new one was counted above
+                state.failed--;
+                state.results[index] = row;
+                state.retryQueue.shift();
+                state.retried++;
+                replaceGridRow(index, row);
+            } else {
+                state.results.push(row);
+                state.nextIndex = index + 1;
+                appendGridRow(row);
+            }
             updateSpeed();
-            appendGridRow(row);
             updateRunUi();
         }
         finishRun(runId, state.failed ? plural(state.failed, "page") +
@@ -2433,7 +2461,8 @@
         if (!state.running) return;
         const resolveStop = state.resolveStop;
         state.runId++;
-        finishRun(state.runId, "Stopped. Start continues with page " + (state.nextIndex + 1) + ".", "info");
+        const resume = state.nextIndex < state.urls.length ? " Start continues with page " + (state.nextIndex + 1) + "." : "";
+        finishRun(state.runId, (state.retryQueue ? "Retry stopped." : "Stopped.") + resume, "info");
         if (resolveStop) resolveStop();
     }
 
@@ -2448,6 +2477,7 @@
         state.elapsedMs += Date.now() - state.runStartedAt;
         state.running = false;
         state.resolveStop = null;
+        state.retryQueue = null;
         clearInterval(state.ticker);
         sendToTab({ action: "detailsBusy", on: false });
         showMessage("detailsRunMessage", message, level);
@@ -2636,6 +2666,25 @@
         state.gridData.push(toGridRow(template, result));
         state.grid.render();
         if (holder) setGridScroll(holder, left, atBottom ? holder.scrollHeight : holder.scrollTop);
+    }
+
+    /**
+     * Shows a row filled again (retry of a failed page) at its place in the grid, without
+     * rebuilding it or moving the view; the column stats are counted again.
+     * @param {number} index - Row index.
+     * @param {Object} result - New result.
+     */
+    function replaceGridRow(index, result) {
+        const template = getSelectedTemplate();
+        state.filledCounts = null;
+        if (!state.grid || !template || !Array.isArray(state.gridData[index])) {
+            rebuildGridIfNeeded(true);
+            return;
+        }
+        // The grid keeps the row arrays it was given: the row is changed in place
+        const cells = state.gridData[index];
+        cells.splice(0, cells.length, ...toGridRow(template, result));
+        state.grid.render();
     }
 
     /**
@@ -2841,6 +2890,7 @@
     });
     initInfoTips();
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
+    $id("detailsRetryFailed").addEventListener("click", () => startRun({ retry: true }));
     ["mousedown", "click"].forEach(type => $id("detailsHot").addEventListener(type, onGridHeaderAction, true));
 
     $id("detailsCsv").addEventListener("click", () => exportResults("csv"));
