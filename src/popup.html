@@ -28,32 +28,33 @@
     <div id="content" class="popup-content-wrapper">
         <div class="popup-content-body">
             <div class="list-top">
-                <div class="osd-counters list-counters" id="stats">
-                    <div class="osd-counter"><span class="osd-counter-value" id="listPages">0</span><span class="osd-counter-label" id="listPagesLabel">pages</span></div>
-                    <div class="osd-counter"><span class="osd-counter-value" id="listRows">0</span><span class="osd-counter-label">rows</span></div>
-                    <div class="osd-counter"><span class="osd-counter-value" id="listLastRows">0</span><span class="osd-counter-label" id="listLastRowsLabel">from last page</span></div>
-                    <div class="osd-counter" title="Working time of the crawl"><span class="osd-counter-value" id="listDuration">00:00</span><span class="osd-counter-label">duration</span></div>
-                    <div class="osd-counter" title="Rows per minute: rows added by crawling divided by the working time"><span class="osd-counter-value" id="listSpeed">&ndash;</span><span class="osd-counter-label">speed</span></div>
-                </div>
-                <div class="osd-row list-controls">
-                    <button type="button" class="osd-btn" id="wrongTable">Try another table</button>
-                    <span class="list-control">
-                        <label for="moreRows" class="osd-label">More rows</label>
-                        <select id="moreRows" class="osd-select">
-                            <option value="none">None</option>
-                            <option value="scroll">Scroll down</option>
-                            <option value="next">Next page button</option>
-                            <option value="loadMore">"Load more" button</option>
-                        </select>
-                    </span>
-                    <button type="button" class="osd-btn osd-btn-accent" id="locateButton" style="display: none;">Locate "Next" button</button>
-                    <span class="list-control" id="crawlDelays" style="display: none;">
-                        <label class="osd-inline-input">Min delay <input id="crawlDelay" type="number" value="1" class="osd-input osd-number"></label>
-                        <label class="osd-inline-input">Max delay <input id="maxWait" type="number" value="20" class="osd-input osd-number"></label>
-                        <span class="osd-hint osd-hint-inline">sec</span>
-                    </span>
-                    <button type="button" class="osd-btn osd-btn-primary" id="startScraping" style="display: none;">Start crawling</button>
-                    <button type="button" class="osd-btn osd-btn-danger" id="stopScraping" style="display: none;">Stop crawling</button>
+                <div class="list-panels">
+                    <div class="list-panel list-settings">
+                        <button type="button" class="osd-btn" id="wrongTable">Try another table</button>
+                        <div class="list-field">
+                            <label for="moreRows" class="osd-label">More rows</label>
+                            <select id="moreRows" class="osd-select">
+                                <option value="none">None</option>
+                                <option value="scroll">Scroll down</option>
+                                <option value="next">Next page button</option>
+                                <option value="loadMore">"Load more" button</option>
+                            </select>
+                        </div>
+                        <button type="button" class="osd-btn osd-btn-accent" id="locateButton" style="display: none;">Locate "Next" button</button>
+                        <button type="button" class="osd-btn osd-btn-primary" id="startScraping" style="display: none;">Start crawling</button>
+                        <button type="button" class="osd-btn osd-btn-danger" id="stopScraping" style="display: none;">Stop crawling</button>
+                        <div class="list-delays" id="crawlDelays" style="display: none;">
+                            <label class="list-field"><span class="osd-label">Min delay</span><input id="crawlDelay" type="number" value="1" class="osd-input osd-number"><span class="osd-hint osd-hint-inline">sec</span></label>
+                            <label class="list-field"><span class="osd-label">Max delay</span><input id="maxWait" type="number" value="20" class="osd-input osd-number"><span class="osd-hint osd-hint-inline">sec</span></label>
+                        </div>
+                    </div>
+                    <div class="list-panel osd-counters list-counters" id="stats">
+                        <div class="osd-counter"><span class="osd-counter-value" id="listPages">0</span><span class="osd-counter-label" id="listPagesLabel">pages</span></div>
+                        <div class="osd-counter"><span class="osd-counter-value" id="listRows">0</span><span class="osd-counter-label">rows</span></div>
+                        <div class="osd-counter"><span class="osd-counter-value" id="listLastRows">0</span><span class="osd-counter-label" id="listLastRowsLabel">from last page</span></div>
+                        <div class="osd-counter" title="Working time of the crawl"><span class="osd-counter-value" id="listDuration">00:00</span><span class="osd-counter-label">duration</span></div>
+                        <div class="osd-counter" title="Rows per minute: rows added by crawling divided by the working time"><span class="osd-counter-value" id="listSpeed">&ndash;</span><span class="osd-counter-label">speed</span></div>
+                    </div>
                 </div>
                 <div id="info">
                     <div class="osd-message osd-message-error" id="error" role="status" style="display: none;"></div>
