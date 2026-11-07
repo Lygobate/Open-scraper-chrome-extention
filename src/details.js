@@ -2017,6 +2017,38 @@
     }
 
     /**
+     * Tooltips for the small "i" icons (class osd-info, text in data-tip): shown on hover and keyboard focus,
+     * kept inside the window. Native title tooltips do not appear in the extension window.
+     */
+    function initInfoTips() {
+        const tip = document.createElement("div");
+        tip.className = "osd-tip";
+        tip.setAttribute("role", "tooltip");
+        tip.hidden = true;
+        document.body.appendChild(tip);
+        const hide = () => { tip.hidden = true; };
+        const show = icon => {
+            tip.textContent = icon.dataset.tip;
+            tip.hidden = false;
+            const margin = 8;
+            const rect = icon.getBoundingClientRect();
+            const width = tip.offsetWidth;
+            const height = tip.offsetHeight;
+            const left = Math.max(margin, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - margin));
+            const below = rect.bottom + 6;
+            const top = below + height + margin <= window.innerHeight ? below : Math.max(margin, rect.top - height - 6);
+            tip.style.left = left + "px";
+            tip.style.top = top + "px";
+        };
+        document.querySelectorAll(".osd-info[data-tip]").forEach(icon => {
+            ["mouseenter", "focus"].forEach(type => icon.addEventListener(type, () => show(icon)));
+            ["mouseleave", "blur"].forEach(type => icon.addEventListener(type, hide));
+            icon.addEventListener("keydown", event => { if (event.key === "Escape") hide(); });
+        });
+        document.addEventListener("scroll", hide, true);
+    }
+
+    /**
      * Writes the options in the header of the closed options panel ("Wait 2–30 s · Load full page: off").
      */
     function updateOptionsSummary() {
@@ -2725,6 +2757,7 @@
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
     $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
     $id("detailsFullPage").addEventListener("change", onFullPageChanged);
+    initInfoTips();
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
     ["mousedown", "click"].forEach(type => $id("detailsHot").addEventListener(type, onGridHeaderAction, true));
 

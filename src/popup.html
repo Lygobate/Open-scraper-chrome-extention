@@ -218,14 +218,14 @@
                     </div>
                     <p class="osd-hint">Each page is read as soon as it shows the fields, but not before Min seconds: raise Min for pages that show their content late. Max is the longest a page can take.</p>
                     <div class="osd-row">
-                        <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">
+                        <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read.">
                             <input type="checkbox" role="switch" id="detailsFullPage" aria-describedby="detailsFullPageInfo">
                             <span class="osd-switch-track" aria-hidden="true"></span>
                             <span class="osd-switch-label">Load full page</span>
                         </label>
-                        <span class="osd-info" id="detailsFullPageInfo" tabindex="0" role="note" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer." aria-label="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">i</span>
+                        <span class="osd-info" id="detailsFullPageInfo" tabindex="0" role="note" data-tip="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read." aria-label="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read.">i</span>
                     </div>
-                    <p class="osd-hint">Saved in the template.</p>
+                    <p class="osd-hint">Slower: every page is scrolled to the bottom before it is read. Saved in the template.</p>
                 </div>
             </details>
             <div class="osd-run-buttons">
