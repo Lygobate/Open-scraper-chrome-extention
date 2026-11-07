@@ -61,6 +61,9 @@
     const LEGACY_FIELD_SETS_KEY = "pageDetailsFieldSets";
     const TEMPLATE_FORMAT = "open-scraper-page-details-template";
     const TEMPLATE_VERSION = 1;
+    // Wait bounds of a page, in seconds, for every template that has none of its own (new, imported
+    // without them, older saved field sets). Min stays at 2: below it, a run reaches about 60 pages
+    // per minute, which sites behind Cloudflare answer with a challenge page.
     const DEFAULT_WAIT = { min: 2, max: 30 };
     const MAX_TEMPLATE_FIELDS = 200;
     // Value of the "+ New template…" entry of the template drop-down
