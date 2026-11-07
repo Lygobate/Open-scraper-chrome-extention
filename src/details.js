@@ -90,8 +90,15 @@
         previewToken: 0,
         picking: false,
         pickToken: 0,
-        picks: [],
+        // While picking: template that gets the picks ("" until the first pick makes one), picks
+        // already received, field id -> pick id of the fields added, field id -> value read when
+        // picked, fields added, and whether the first pick made the template
         pickTemplateId: "",
+        pickKnown: 0,
+        pickIds: {},
+        pickValues: {},
+        pickAdded: 0,
+        pickCreated: false,
         // Values read in the test page by field id, and the template they were read for
         previewValues: null,
         previewTemplateId: "",
@@ -965,13 +972,28 @@
         }
     }
 
+    // Template changes of this window, one after the other (a pick saved while a field is
+    // removed must not write over it)
+    let templatesWrite = Promise.resolve();
+
     /**
      * Changes the stored templates: reads the latest list (other windows may have changed it),
-     * applies the change and writes the list back.
+     * applies the change and writes the list back, after the changes already under way.
      * @param {function(Object[]): void} change - Changes the list in place.
      * @returns {Promise<boolean>} True when saved.
      */
-    async function updateTemplates(change) {
+    function updateTemplates(change) {
+        const write = templatesWrite.then(() => writeTemplates(change));
+        templatesWrite = write;
+        return write;
+    }
+
+    /**
+     * Does the change of updateTemplates.
+     * @param {function(Object[]): void} change - Changes the list in place.
+     * @returns {Promise<boolean>} True when saved.
+     */
+    async function writeTemplates(change) {
         try {
             const templates = await readTemplates();
             change(templates);
@@ -1110,21 +1132,6 @@
     }
 
     /**
-     * Creates a new template from the fields picked in the page, and selects it.
-     * @param {Array<{name: string, kind: string, selectors: string[], sample: string}>} picks - Picked fields.
-     */
-    async function createTemplateFromPicks(picks) {
-        const domain = getTestDomain();
-        const fields = picksToFields(picks, [], [state.urlColumnName || "URL"]).slice(0, MAX_TEMPLATE_FIELDS);
-        if (!fields.length) {
-            showMessage("detailsPickMessage", "Nothing was selected.", "warning");
-            return;
-        }
-        const template = await addTemplate({ domain: domain, name: domain + " details", fields: fields });
-        if (template) showMessage("detailsPickMessage", "Template \"" + template.name + "\" created with " + plural(fields.length, "field") + ".");
-    }
-
-    /**
      * Saves a new template and selects it. Its name is made unique on its domain.
      * @param {{domain: string, name: string, fields: Object[], wait: Object, fullPage: boolean, renames: Object}} props -
      *     Content of the template (wait, fullPage and renames are optional).
@@ -1214,27 +1221,58 @@
     }
 
     /**
-     * Adds picked fields to an existing template (same id and name); fields it already has
-     * are not added twice.
-     * @param {string} templateId - Template id.
+     * Adds picks to a template's fields, one by one (see picksToFields), up to the field limit.
+     * @param {Object} template - Template, changed in place.
      * @param {Array<Object>} picks - Picked fields.
+     * @returns {Array<{pick: Object, field: Object}>} Picks added, with their new field.
      */
-    async function addFieldsToTemplate(templateId, picks) {
-        let added = 0;
-        let name = "";
-        const saved = await updateTemplate(templateId, template => {
-            const fields = picksToFields(picks, template.fields, getResultColumns(template))
-                .slice(0, Math.max(0, MAX_TEMPLATE_FIELDS - template.fields.length));
-            template.fields = template.fields.concat(fields);
-            added = fields.length;
-            name = template.name;
+    function appendPicks(template, picks) {
+        const added = [];
+        picks.forEach(pick => {
+            if (template.fields.length >= MAX_TEMPLATE_FIELDS) return;
+            const field = picksToFields([pick], template.fields, getResultColumns(template))[0];
+            if (!field) return;
+            template.fields.push(field);
+            added.push({ pick: pick, field: field });
         });
-        if (!saved) {
-            showMessage("detailsPickMessage", "The template was deleted meanwhile: nothing was added.", "warning");
+        return added;
+    }
+
+    /**
+     * Saves picks into the template being picked as soon as they arrive: the first pick makes
+     * a new template (named like the domain) when none is edited. Picks that add no field
+     * (already in the template, or over the limit) are unselected in the page again.
+     * @param {number} token - Picking session.
+     * @param {Array<Object>} picks - New picks.
+     */
+    async function savePicks(token, picks) {
+        let added = [];
+        const current = state.templates.find(t => t.id === state.pickTemplateId);
+        if (current) {
+            const saved = await updateTemplate(current.id, template => { added = appendPicks(template, picks); });
+            if (!saved) added = [];
         } else {
-            showMessage("detailsPickMessage", added ? plural(added, "field") + " added to \"" + name + "\"." :
-                "No new field: what you selected is already in the template.", added ? "info" : "warning");
+            const domain = getTestDomain();
+            const draft = { fields: [], renames: {} };
+            added = appendPicks(draft, picks);
+            const template = added.length ? await addTemplate({ domain: domain, name: domain + " details", fields: draft.fields }) : null;
+            if (!template) {
+                added = [];
+            } else if (token === state.pickToken) {
+                state.pickTemplateId = template.id;
+                state.pickCreated = true;
+            }
         }
+        const kept = new Set(added.map(entry => entry.pick.id));
+        picks.filter(pick => !kept.has(pick.id)).forEach(pick => sendToTab({ action: "detailsPickerRemove", id: pick.id }));
+        if (token !== state.pickToken) return;
+        added.forEach(entry => {
+            state.pickIds[entry.field.id] = entry.pick.id;
+            state.pickValues[entry.field.id] = String(entry.pick.sample || "");
+        });
+        state.pickAdded += added.length;
+        showPickingMessage(added.length < picks.length ? "Not added: already in the template, or the template is full." : "");
+        refreshPreview();
     }
 
     /**
@@ -1524,18 +1562,27 @@
     }
 
     /**
-     * Reads the preview for refreshPreview.
+     * Reads the preview for refreshPreview. While picking, the page is not read: the list shows
+     * the fields of the template being picked with the values seen when they were picked (none
+     * before the first pick of a new template).
      * @param {number} token - Preview token: a newer preview cancels this one.
      * @param {{shownPage: boolean, fullPage: boolean}} [options] - See refreshPreview.
      */
     async function readPreview(token, options) {
         const template = getSelectedTemplate();
         const box = $id("detailsPreview");
-        if (!template || state.step !== 2) {
+        if (!template || state.step !== 2 || (state.picking && template.id !== state.pickTemplateId)) {
             box.hidden = true;
             return;
         }
         box.hidden = false;
+        if (state.picking) {
+            const values = {};
+            template.fields.forEach(field => { values[field.id] = state.pickValues[field.id] || ""; });
+            renderPreviewRows(template, values);
+            setPreviewStatus(plural(template.fields.length, "field") + " selected");
+            return;
+        }
         state.previewUrl = "";
         if (!template.fields.length) {
             renderPreviewRows(template, {});
@@ -1619,9 +1666,14 @@
 
     /**
      * Draws the preview again with the values already read, when they cover every field of the
-     * selected template (else it waits for the next read).
+     * selected template (else it waits for the next read). While picking, the list is drawn again
+     * with the fields picked so far.
      */
     function redrawPreview() {
+        if (state.picking) {
+            refreshPreview();
+            return;
+        }
         const template = getSelectedTemplate();
         if (!template || $id("detailsPreview").hidden) return;
         const values = state.previewValues;
@@ -1646,7 +1698,7 @@
      * Draws the preview table: the URL column, then one row per field with a drag handle, its
      * kind, column name (renamable), value read in the test page, and a button to remove it.
      * Not redrawn while a name is being edited or a field dragged (it is drawn again when that
-     * ends).
+     * ends). Names can be changed and fields removed while picking, not during a run.
      * @param {Object} template - Template.
      * @param {Object<string, string>|null} values - Values by field id, or null while loading.
      */
@@ -1697,7 +1749,7 @@
             rename.textContent = "✎";
             rename.title = "Rename this column";
             rename.setAttribute("aria-label", "Rename column " + name);
-            rename.disabled = busy;
+            rename.disabled = state.running;
             rename.addEventListener("click", () => startRename(nameCell, template.id, key, name));
             nameCell.append(nameText, rename);
 
@@ -1715,7 +1767,7 @@
                 remove.textContent = "×";
                 remove.title = "Remove this field from the template";
                 remove.setAttribute("aria-label", "Remove field " + name);
-                remove.disabled = busy;
+                remove.disabled = state.running;
                 remove.addEventListener("click", () => removeTemplateField(template.id, field.id));
                 actionsCell.appendChild(remove);
             }
@@ -1832,7 +1884,7 @@
      * @param {string} current - Current name.
      */
     function startRename(cell, templateId, key, current) {
-        if (state.renaming || isBusy()) return;
+        if (state.renaming || state.running) return;
         state.renaming = true;
         cell.textContent = "";
         const input = document.createElement("input");
@@ -1871,11 +1923,19 @@
     }
 
     /**
-     * Removes a field from a template.
+     * Removes a field from a template. While picking, it is also unselected in the page (its
+     * element can then be picked again).
      * @param {string} templateId - Template id.
      * @param {string} fieldId - Field id.
      */
     async function removeTemplateField(templateId, fieldId) {
+        if (state.running) return;
+        if (state.picking && templateId === state.pickTemplateId) {
+            sendToTab({ action: "detailsPickerRemove", id: state.pickIds[fieldId] || fieldId });
+            if (fieldId in state.pickIds) state.pickAdded--;
+            delete state.pickIds[fieldId];
+            delete state.pickValues[fieldId];
+        }
         await updateTemplate(templateId, template => {
             template.fields = template.fields.filter(field => field.id !== fieldId);
             delete template.renames[fieldId];
@@ -1893,6 +1953,8 @@
 
     /**
      * Opens the test page if needed, brings it to the front and turns on the picker there.
+     * Each pick is saved into the template at once and listed below (see savePicks), where it
+     * can be renamed or removed while picking goes on.
      * @param {"new"|"edit"} [mode="new"] - "new" makes a new template of the picks; "edit"
      *     shows the selected template's fields as selected and adds the picks to it.
      */
@@ -1907,8 +1969,13 @@
         const token = ++state.pickToken;
         state.previewToken++;
         state.picking = true;
-        state.picks = [];
         state.pickTemplateId = editing ? editing.id : "";
+        state.pickKnown = 0;
+        state.pickIds = {};
+        // The fields of an edited template keep the values of its last preview
+        state.pickValues = editing && state.previewTemplateId === editing.id && state.previewValues ? Object.assign({}, state.previewValues) : {};
+        state.pickAdded = 0;
+        state.pickCreated = false;
         closeTemplateMenu();
         closePrompt("detailsTemplatePrompt");
         updateBusyUi();
@@ -1922,7 +1989,7 @@
         }
         await focusTargetTab();
         const startMessage = { action: "detailsPickerStart" };
-        if (editing) startMessage.existing = editing.fields.map(field => ({ kind: field.kind, selectors: field.selectors }));
+        if (editing) startMessage.existing = editing.fields.map(field => ({ id: field.id, kind: field.kind, selectors: field.selectors }));
         const started = await sendToTabWithRetry(startMessage, ANSWER_TIMEOUT_MS);
         if (token !== state.pickToken) return;
         if (!started || !started.ok) {
@@ -1930,29 +1997,43 @@
             return;
         }
         connectSessionPort(started.doc);
-        showMessage("detailsPickMessage", editing && editing.fields.length ? "Fields of \"" + editing.name + "\" found in the page are green. Click more data to add, then click Finish." :
-            "Click the data to extract in the page, then click Finish.");
+        showPickingMessage();
+        refreshPreview();
         pollPicks(token);
     }
 
     /**
-     * Waits for new picks from the page until picking ends.
+     * Shows what to do while picking, after an optional note.
+     * @param {string} [note] - Text shown first (a warning).
+     */
+    function showPickingMessage(note) {
+        const template = state.templates.find(t => t.id === state.pickTemplateId);
+        let text = "Click the data to extract in the page, then click Finish.";
+        if (state.pickAdded) {
+            text = plural(state.pickAdded, "field") + " added. Rename (✎) or remove (×) them below as you go; click Finish in the page when done.";
+        } else if (template && template.fields.length && !state.pickCreated) {
+            text = "Fields of \"" + template.name + "\" found in the page are green. Click more data to add, then click Finish.";
+        }
+        showMessage("detailsPickMessage", note ? note + " " + text : text, note ? "warning" : "info");
+    }
+
+    /**
+     * Receives the picks from the page until picking ends, and saves each one at once. The page
+     * answers a poll as soon as something is picked (or picking ends), so a pick shows in the
+     * window right after the click.
      * @param {number} token - Picking session.
      */
     async function pollPicks(token) {
-        let known = 0;
         while (token === state.pickToken) {
-            const response = await sendToTab({ action: "detailsPickerPoll", known: known });
+            const response = await sendToTab({ action: "detailsPickerPoll", known: state.pickKnown });
             if (token !== state.pickToken) return;
             if (!response || !Array.isArray(response.picks)) {
                 endPicking(token, "Selecting ended because the page changed or was closed.", "warning");
                 return;
             }
-            state.picks = response.picks;
-            known = response.picks.length;
-            if (response.active) {
-                showMessage("detailsPickMessage", plural(known, "field") + " selected. Click Finish in the page when done.");
-            } else {
+            state.pickKnown = Number(response.count) || 0;
+            if (response.picks.length) await savePicks(token, response.picks);
+            if (!response.active) {
                 endPicking(token, "");
                 return;
             }
@@ -1960,46 +2041,45 @@
     }
 
     /**
-     * Asks the page to end picking (the poll then receives the final picks).
+     * Asks the page to end picking (the poll then receives the last picks).
      */
     async function finishPicking() {
         const token = state.pickToken;
-        const response = await sendToTab({ action: "detailsPickerStop" });
-        if (!response) {
-            endPicking(token, "");
-        } else if (Array.isArray(response.picks) && token === state.pickToken) {
-            state.picks = response.picks;
-        }
+        const response = await sendToTab({ action: "detailsPickerStop", known: state.pickKnown });
+        if (!response) endPicking(token, "");
     }
 
     /**
-     * Leaves picking mode; the picks, if any, become a new template.
+     * Leaves picking mode. The picks are already saved in the template (see savePicks): ending
+     * any other way than Finish (page closed or changed, window closed) keeps them too.
      * @param {number} token - Picking session that ends.
-     * @param {string} message - Message to show ("" for none).
+     * @param {string} message - Message to show ("" for the summary of what was added).
      * @param {"info"|"warning"|"error"} [level] - Message level.
      */
     function endPicking(token, message, level) {
         if (token !== state.pickToken) return;
         state.pickToken++;
         state.picking = false;
-        const picks = state.picks;
-        const editedId = state.pickTemplateId;
-        state.picks = [];
+        const template = state.templates.find(t => t.id === state.pickTemplateId);
+        const added = state.pickAdded;
+        const created = state.pickCreated;
         state.pickTemplateId = "";
+        state.pickIds = {};
+        state.pickValues = {};
+        state.pickAdded = 0;
+        state.pickCreated = false;
+        if (!message && template && added) {
+            message = created ? "Template \"" + template.name + "\" created with " + plural(added, "field") + "." :
+                plural(added, "field") + " added to \"" + template.name + "\".";
+        } else if (!message) {
+            message = "No field added.";
+            level = "warning";
+        } else if (template && added) {
+            message += " The " + plural(added, "field") + " selected before are kept.";
+        }
         showMessage("detailsPickMessage", message, level);
         updateBusyUi();
-        if (editedId) {
-            if (picks.length) {
-                addFieldsToTemplate(editedId, picks).then(() => refreshPreview());
-            } else {
-                if (!message) showMessage("detailsPickMessage", "No field added.");
-                refreshPreview();
-            }
-        } else if (picks.length) {
-            createTemplateFromPicks(picks);
-        } else if (!message) {
-            showMessage("detailsPickMessage", "Nothing was selected.", "warning");
-        }
+        refreshPreview();
     }
 
     // --- Step 3: run ---
