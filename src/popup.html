@@ -207,7 +207,7 @@
                 <summary>
                     <span class="osd-options-chevron" aria-hidden="true"></span>
                     <span class="osd-options-title">Options</span>
-                    <span class="osd-options-summary" id="detailsOptionsSummary">Wait 2–30 s · Load full page: off · Fast</span>
+                    <span class="osd-options-summary" id="detailsOptionsSummary">Wait 2–30 s · Load full page: off · Mode: <span class="is-fast">&#x26A1; Fast</span></span>
                 </summary>
                 <div class="osd-options-body">
                     <div class="osd-row">
@@ -218,12 +218,12 @@
                         <span class="osd-info" id="detailsWaitInfo" tabindex="0" role="note" data-tip="Min is the shortest a page takes: raise it for pages that show their content late. Max is the longest a page can take. Fast reads each page once it has loaded and Min has passed. Safe also waits for fields drawn late." aria-label="Min is the shortest a page takes: raise it for pages that show their content late. Max is the longest a page can take. Fast reads each page once it has loaded and Min has passed. Safe also waits for fields drawn late.">i</span>
                     </div>
                     <div class="osd-row">
-                        <span class="osd-label">Speed</span>
-                        <div class="osd-segmented" role="group" aria-label="Fast or Safe" aria-describedby="detailsSpeedInfo">
-                            <button type="button" class="osd-seg is-active" id="detailsSpeedFast" data-speed="fast" aria-pressed="true">Fast</button>
-                            <button type="button" class="osd-seg" id="detailsSpeedSafe" data-speed="safe" aria-pressed="false">Safe</button>
+                        <span class="osd-label">Mode</span>
+                        <div class="osd-segmented" role="group" aria-label="Mode: Fast or Safe" aria-describedby="detailsModeInfo">
+                            <button type="button" class="osd-seg is-active" id="detailsModeFast" data-mode="fast" aria-pressed="true">&#x26A1; Fast</button>
+                            <button type="button" class="osd-seg" id="detailsModeSafe" data-mode="safe" aria-pressed="false">&#x1F6E1;&#xFE0F; Safe</button>
                         </div>
-                        <span class="osd-info" id="detailsSpeedInfo" tabindex="0" role="note" data-tip="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete." aria-label="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete.">i</span>
+                        <span class="osd-info" id="detailsModeInfo" tabindex="0" role="note" data-tip="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete." aria-label="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete.">i</span>
                     </div>
                     <div class="osd-row">
                         <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read.">

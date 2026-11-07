@@ -1009,6 +1009,25 @@ body.mode-details .details-panel {
     color: var(--accent-rose);
 }
 
+/* Fast / Safe mode: yellow / green, in the summary and on the chosen button */
+.osd-options-summary .is-fast,
+.osd-seg[data-mode="fast"].is-active {
+    color: var(--accent-amber);
+}
+
+.osd-seg[data-mode="fast"].is-active {
+    background: var(--accent-amber-dim);
+}
+
+.osd-options-summary .is-safe,
+.osd-seg[data-mode="safe"].is-active {
+    color: var(--accent-emerald);
+}
+
+.osd-seg[data-mode="safe"].is-active {
+    background: var(--accent-emerald-dim);
+}
+
 .osd-options[open] .osd-options-summary {
     display: none;
 }

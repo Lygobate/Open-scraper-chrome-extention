@@ -2375,12 +2375,12 @@
      *   wait or from the load, whichever comes last (so a page is never read earlier than when
      *   it had loaded and Min had passed);
      * - never beyond limitMs (the Max limit of the run).
-     * With the Fast speed, none of the waits for missing fields holds: the fields are read once the
+     * With the Fast mode, none of the waits for missing fields holds: the fields are read once the
      * page has loaded and notBeforeMs has passed (or limitMs), whatever is missing.
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
-     * @param {{notBeforeMs: number, lateMs: number, limitMs: number, awaited: boolean[], speed: string, onValues: Function}} options -
+     * @param {{notBeforeMs: number, lateMs: number, limitMs: number, awaited: boolean[], mode: string, onValues: Function}} options -
      *     Times in milliseconds from now; awaited tells, per field, whether a missing value holds
-     *     the page up (all of them when not given); speed "fast" reads once loaded (see above);
+     *     the page up (all of them when not given); mode "fast" reads once loaded (see above);
      *     onValues is called with the values of every read of the page (optional).
      * @returns {Promise<{values: string[], complete: boolean, late: boolean[]}>} Values; complete
      *     when every awaited field has one; late, per field, when its value only showed after the
@@ -2392,7 +2392,7 @@
         var limitMs = Number(options.limitMs);
         var hardEnd = started + (limitMs >= 0 ? limitMs : 30000);
         var lateMs = Math.max(0, Number(options.lateMs) || 0);
-        var fast = options.speed === "fast";
+        var fast = options.mode === "fast";
         var awaited = fields.map(function(field, i) { return !Array.isArray(options.awaited) || options.awaited[i] !== false; });
         var onValues = typeof options.onValues === "function" ? options.onValues : null;
         var readValues = function() {
@@ -2466,8 +2466,8 @@
 
     // --- Load full page (option of a template) ---
 
-    // Timings of the scroll for each speed of a run (Fast / Safe option); the preview, which gives
-    // no speed, scrolls like Safe:
+    // Timings of the scroll for each mode of a run (Fast / Safe option); the preview, which gives
+    // no mode, scrolls like Safe:
     // - stepPauseMs: pause after each jump down, so that the page's lazy loaders see the part shown and start;
     // - pollMs: pause between two checks when not jumping (looking for a scroller, waiting at the bottom);
     // - stableMs: at the bottom, the page counts as fully loaded once its height has not grown for
@@ -2533,14 +2533,14 @@
      * scroller shows up or the page grows (a page still short or empty when the scroll starts).
      * @param {number} limitMs - Longest time, in milliseconds.
      * @param {number} [minMs] - Shortest time, in milliseconds (the Min wait of a run).
-     * @param {string} [speed] - "fast" for the Fast timings (see FULL_PAGE_TIMING), else Safe.
+     * @param {string} [mode] - "fast" for the Fast timings (see FULL_PAGE_TIMING), else Safe.
      * @param {Function} [onStep] - Called at each check of the scroll, and once at the end before
-     *     scrolling back (a run in Safe speed reads the fields there).
+     *     scrolling back (a run in Safe mode reads the fields there).
      * @returns {Promise<{bottom: boolean, steps: number, cancelled: boolean}>} Whether the end
      *     was reached, the jumps made, and whether the scroll was stopped (stopFullPageScroll).
      */
-    function scrollThroughPage(limitMs, minMs, speed, onStep) {
-        var timing = speed === "fast" ? FULL_PAGE_TIMING.fast : FULL_PAGE_TIMING.safe;
+    function scrollThroughPage(limitMs, minMs, mode, onStep) {
+        var timing = mode === "fast" ? FULL_PAGE_TIMING.fast : FULL_PAGE_TIMING.safe;
         var token = ++fullPageScrollToken;
         var end = Date.now() + Math.max(0, Number(limitMs) || 0);
         var minEnd = Date.now() + Math.max(0, Number(minMs) || 0);
@@ -2753,10 +2753,10 @@
                         var limitMs = Number(message.limitMs);
                         var minMs = Math.max(0, Number(message.notBeforeMs) || 0);
                         var scroll = null;
-                        // Safe speed: latest non-empty value of each field seen by any read of the page (every
+                        // Safe mode: latest non-empty value of each field seen by any read of the page (every
                         // check of the scroll and of the wait), kept in case the page removes it again
                         // (content unloaded once scrolled past, lists that only keep the rows in view)
-                        var safe = message.speed !== "fast";
+                        var safe = message.mode !== "fast";
                         var seen = fields.map(function() { return ""; });
                         var remember = safe ? function(values) {
                             values.forEach(function(value, i) { if (value) seen[i] = value; });
@@ -2772,7 +2772,7 @@
                         };
                         // "Load full page": scroll through the page first, within the page's time limit and
                         // not ending before the Min wait. The time spent scrolling counts in both.
-                        var scrolled = message.fullPage ? scrollThroughPage(timeLeft(), minMs, message.speed,
+                        var scrolled = message.fullPage ? scrollThroughPage(timeLeft(), minMs, message.mode,
                             safe ? function() { remember(extractPageDetails(fields)); } : null) : Promise.resolve(null);
                         scrolled.then(function(result) {
                             scroll = result;
