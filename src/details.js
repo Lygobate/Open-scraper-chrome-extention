@@ -874,14 +874,26 @@
     }
 
     /**
-     * Brings two wait bounds in range: integers >= 0 with min <= max.
+     * Reads a number of seconds, saved or typed ("2.5", or "2,5" with a comma), rounded to the
+     * nearest half second, at most one hour.
+     * @param {*} value - Raw value.
+     * @returns {number} Seconds, or NaN when it is not a number >= 0.
+     */
+    function parseSeconds(value) {
+        const number = parseFloat(String(value == null ? "" : value).trim().replace(",", "."));
+        return Number.isFinite(number) && number >= 0 ? Math.min(Math.round(number * 2) / 2, 3600) : NaN;
+    }
+
+    /**
+     * Brings two wait bounds in range: half seconds >= 0 with min <= max (DEFAULT_WAIT for a
+     * missing or unreadable bound).
      * @param {*} wait - Raw {min, max}.
      * @returns {{min: number, max: number}} Bounds in seconds.
      */
     function normalizeWait(wait) {
         const read = (value, fallback) => {
-            const number = parseInt(value, 10);
-            return Number.isFinite(number) && number >= 0 ? Math.min(number, 3600) : fallback;
+            const seconds = parseSeconds(value);
+            return Number.isNaN(seconds) ? fallback : seconds;
         };
         const min = read(wait && wait.min, DEFAULT_WAIT.min);
         return { min: min, max: Math.max(min, read(wait && wait.max, DEFAULT_WAIT.max)) };
@@ -2134,15 +2146,21 @@
     }
 
     /**
-     * Keeps min <= max (raising Min raises Max, lowering Max lowers Min) and saves both in the template.
+     * Keeps min <= max (raising Min raises Max, lowering Max lowers Min), rounds both to the half
+     * second and saves them in the template. A value that is not a number gets back the saved one.
      * @param {"min"|"max"} changed - Input the user changed.
      */
     function onWaitChanged(changed) {
         const minInput = $id("detailsMinWait");
         const maxInput = $id("detailsMaxWait");
-        const read = input => Math.max(0, parseInt(input.value, 10) || 0);
-        let min = read(minInput);
-        let max = read(maxInput);
+        const selected = getSelectedTemplate();
+        const saved = normalizeWait(selected ? selected.wait : DEFAULT_WAIT);
+        const read = (input, fallback) => {
+            const seconds = parseSeconds(input.value);
+            return Number.isNaN(seconds) ? fallback : seconds;
+        };
+        let min = read(minInput, saved.min);
+        let max = read(maxInput, saved.max);
         if (min > max) {
             if (changed === "min") max = min;
             else min = max;
