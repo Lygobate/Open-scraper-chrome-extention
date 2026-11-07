@@ -429,7 +429,7 @@
      */
     function getColumnStatHtml(filled, rows) {
         if (!rows) return '<span class="osd-col-stat">&nbsp;</span>';
-        return '<span class="osd-col-stat' + (filled < rows ? " is-partial" : "") + '" title="' + filled + " of " + rows +
+        return '<span class="osd-col-stat' + (filled < rows ? " is-partial" : " is-complete") + '" title="' + filled + " of " + rows +
             ' rows have a value">' + filled + "/" + rows + "</span>";
     }
 

@@ -2522,7 +2522,7 @@
                 const statTip = counts.rows ? ' title="' + filled + " of " + counts.rows + ' rows have a value"' : "";
                 const show = col > 0 ? '<button type="button" class="osd-col-action" data-col-action="show" data-col="' + col +
                     '" title="Show in page">&#9673;</button>' : "";
-                return '<span class="osd-col-stat' + (counts.rows && filled < counts.rows ? " is-partial" : "") + '"' + statTip + ">" + stat + "</span>" +
+                return '<span class="osd-col-stat' + (counts.rows && filled < counts.rows ? " is-partial" : counts.rows ? " is-complete" : "") + '"' + statTip + ">" + stat + "</span>" +
                     '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
                     '<button type="button" class="osd-col-action" data-col-action="rename" data-col="' + col +
                     '" title="Rename column">&#9998;</button>' + show + "</span>";

@@ -1136,6 +1136,9 @@ body.mode-details .details-panel {
 .osd-hot .osd-col-stat.is-partial {
     color: var(--accent-amber);
 }
+.osd-hot .osd-col-stat.is-complete {
+    color: var(--accent-emerald);
+}
 
 .osd-hot-wrap {
     width: 100%;
