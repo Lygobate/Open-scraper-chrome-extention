@@ -2458,11 +2458,16 @@
     // Pause after each jump down, so that the page's lazy loaders see the part shown and start
     var FULL_PAGE_STEP_PAUSE_MS = 120;
     // At the bottom, the page counts as fully loaded once its height has not grown for this long
+    // (and, in a run, once its Min wait has passed: content may still be drawn after the load)
     var FULL_PAGE_STABLE_MS = 500;
     // Longest wait for the page's load event before scrolling (its scripts set up the lazy loaders)
     var FULL_PAGE_LOAD_WAIT_MS = 5000;
     // A page that does not scroll yet (content still drawn after load) is watched this long for one
+    // (longer when the Min wait of the run is longer)
     var FULL_PAGE_SCROLLER_WAIT_MS = 1000;
+    // A run whose fields are still missing after the scroll scrolls once more when at least this
+    // much of its time limit is left
+    var FULL_PAGE_RETRY_MIN_MS = 2000;
     // Most jumps on one page: a page that keeps growing (endless feed) is read after that
     var FULL_PAGE_MAX_STEPS = 150;
     // Each new scroll, and every stop of the scraping window, ends the scroll under way
@@ -2504,14 +2509,18 @@
      * the content shown only once scrolled to (lazy images, reviews, comments, related items)
      * is there, then scrolls back to where it was. Waits first for the page's load event (at
      * most FULL_PAGE_LOAD_WAIT_MS), as its scripts set up the lazy loaders. The end counts as
-     * reached once the page has not grown for FULL_PAGE_STABLE_MS at the bottom.
+     * reached once the page has not grown for FULL_PAGE_STABLE_MS at the bottom, and never
+     * before minMs have passed: until then the page is watched, and scrolled again when a
+     * scroller shows up or the page grows (a page still short or empty when the scroll starts).
      * @param {number} limitMs - Longest time, in milliseconds.
+     * @param {number} [minMs] - Shortest time, in milliseconds (the Min wait of a run).
      * @returns {Promise<{bottom: boolean, steps: number, cancelled: boolean}>} Whether the end
      *     was reached, the jumps made, and whether the scroll was stopped (stopFullPageScroll).
      */
-    function scrollThroughPage(limitMs) {
+    function scrollThroughPage(limitMs, minMs) {
         var token = ++fullPageScrollToken;
         var end = Date.now() + Math.max(0, Number(limitMs) || 0);
+        var minEnd = Date.now() + Math.max(0, Number(minMs) || 0);
         var loadEnd = Math.min(end, Date.now() + FULL_PAGE_LOAD_WAIT_MS);
         return new Promise(function(resolve) {
             var scroller = null;
@@ -2538,7 +2547,7 @@
                     // Nothing scrolls yet: the page may still be drawing its content
                     scroller = findPageScroller();
                     if (!scroller) {
-                        if (now - startedAt >= FULL_PAGE_SCROLLER_WAIT_MS) return finish(true);
+                        if (now - startedAt >= FULL_PAGE_SCROLLER_WAIT_MS && now >= minEnd) return finish(true);
                         return setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
                     }
                     startTop = scroller.scrollTop;
@@ -2557,7 +2566,7 @@
                 }
                 if (top + scroller.clientHeight >= height - 2 || stuckJumps >= 3) {
                     if (!bottomSince) bottomSince = now;
-                    if (now - Math.max(bottomSince, heightSince) >= FULL_PAGE_STABLE_MS) return finish(true);
+                    if (now >= minEnd && now - Math.max(bottomSince, heightSince) >= FULL_PAGE_STABLE_MS) return finish(true);
                     return setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
                 }
                 bottomSince = 0;
@@ -2716,20 +2725,36 @@
                         }
                         var started = Date.now();
                         var limitMs = Number(message.limitMs);
+                        var minMs = Math.max(0, Number(message.notBeforeMs) || 0);
                         var scroll = null;
-                        // "Load full page": scroll through the page first, within the page's time limit
-                        var scrolled = message.fullPage ? scrollThroughPage(limitMs >= 0 ? limitMs : 30000) : Promise.resolve(null);
+                        var late = [];
+                        // Time left before the Max limit of the run (negative limit: not given)
+                        var timeLeft = function() { return limitMs >= 0 ? Math.max(0, limitMs - (Date.now() - started)) : 30000; };
+                        var read = function(minWait) {
+                            return waitForRunFields(fields, Object.assign({}, message, {
+                                notBeforeMs: minWait,
+                                limitMs: scroll && scroll.cancelled ? 0 : (limitMs >= 0 ? timeLeft() : limitMs)
+                            })).then(function(result) {
+                                late = result.late.map(function(flag, i) { return flag || !!late[i]; });
+                                return result;
+                            });
+                        };
+                        // "Load full page": scroll through the page first, within the page's time limit and
+                        // not ending before the Min wait. The time spent scrolling counts in both.
+                        var scrolled = message.fullPage ? scrollThroughPage(timeLeft(), minMs) : Promise.resolve(null);
                         scrolled.then(function(result) {
                             scroll = result;
-                            // The time spent scrolling counts in the Min wait and in the time limit
-                            var spent = Date.now() - started;
-                            return waitForRunFields(fields, Object.assign({}, message, {
-                                notBeforeMs: Math.max(0, (Number(message.notBeforeMs) || 0) - spent),
-                                limitMs: scroll && scroll.cancelled ? 0 : (limitMs >= 0 ? Math.max(0, limitMs - spent) : limitMs)
-                            }));
+                            return read(Math.max(0, minMs - (Date.now() - started)));
+                        }).then(function(result) {
+                            // Fields still missing: content drawn after the scroll may need one more pass
+                            if (result.complete || !scroll || scroll.cancelled || timeLeft() < FULL_PAGE_RETRY_MIN_MS) return result;
+                            return scrollThroughPage(timeLeft(), 0).then(function(again) {
+                                scroll = { bottom: again.bottom, steps: scroll.steps + again.steps, cancelled: again.cancelled, retried: true };
+                                return read(0);
+                            });
                         }).then(function(result) {
                             sendResponse({ ok: true, status: status, url: window.location.href, values: result.values,
-                                complete: result.complete, late: result.late, waitedMs: Date.now() - started, scroll: scroll });
+                                complete: result.complete, late: late, waitedMs: Date.now() - started, scroll: scroll });
                         }).catch(function(e) {
                             sendResponse({ error: String(e && e.message || e) });
                         });
