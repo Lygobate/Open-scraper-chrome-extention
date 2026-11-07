@@ -2461,6 +2461,8 @@
     var FULL_PAGE_STABLE_MS = 500;
     // Longest wait for the page's load event before scrolling (its scripts set up the lazy loaders)
     var FULL_PAGE_LOAD_WAIT_MS = 5000;
+    // A page that does not scroll yet (content still drawn after load) is watched this long for one
+    var FULL_PAGE_SCROLLER_WAIT_MS = 1000;
     // Most jumps on one page: a page that keeps growing (endless feed) is read after that
     var FULL_PAGE_MAX_STEPS = 150;
     // Each new scroll, and every stop of the scraping window, ends the scroll under way
@@ -2475,7 +2477,7 @@
 
     /**
      * Finds what scrolls the page: the document when it is taller than the window, else the
-     * largest inner box that scrolls (web apps whose body does not scroll).
+     * largest box that scrolls, the body included (web apps whose window does not scroll).
      * @returns {Element|null} Element to scroll, or null when nothing scrolls.
      */
     function findPageScroller() {
@@ -2483,7 +2485,7 @@
         if (documentScroller.scrollHeight > documentScroller.clientHeight + 1) return documentScroller;
         var best = null;
         var bestArea = 0;
-        var elements = document.body ? document.body.getElementsByTagName("*") : [];
+        var elements = document.body ? [document.body].concat(Array.prototype.slice.call(document.body.getElementsByTagName("*"))) : [];
         for (var i = 0; i < elements.length; i++) {
             var element = elements[i];
             if (element.scrollHeight <= element.clientHeight + 1 || !element.clientHeight) continue;
@@ -2521,6 +2523,7 @@
             // A page can keep the scroll from moving: after a few jumps that did not move, it is the end
             var jumpedFrom = -1;
             var stuckJumps = 0;
+            var startedAt = Date.now();
             var finish = function(bottom) {
                 var cancelled = token !== fullPageScrollToken;
                 // Back to where the page was, unless a newer scroll took over
@@ -2531,6 +2534,17 @@
                 if (token !== fullPageScrollToken) return finish(false);
                 var now = Date.now();
                 if (now >= end) return finish(false);
+                if (!scroller) {
+                    // Nothing scrolls yet: the page may still be drawing its content
+                    scroller = findPageScroller();
+                    if (!scroller) {
+                        if (now - startedAt >= FULL_PAGE_SCROLLER_WAIT_MS) return finish(true);
+                        return setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
+                    }
+                    startTop = scroller.scrollTop;
+                    lastHeight = scroller.scrollHeight;
+                    heightSince = now;
+                }
                 var height = scroller.scrollHeight;
                 if (height !== lastHeight) {
                     lastHeight = height;
@@ -2557,11 +2571,7 @@
                 window.removeEventListener("load", start);
                 clearTimeout(loadTimer);
                 if (token !== fullPageScrollToken) return finish(false);
-                scroller = findPageScroller();
-                if (!scroller) return finish(true);
-                startTop = scroller.scrollTop;
-                lastHeight = scroller.scrollHeight;
-                heightSince = Date.now();
+                startedAt = Date.now();
                 step();
             };
             var loadTimer = 0;
@@ -2624,7 +2634,7 @@
             case "detailsPing":
                 if (typeof message.busy === "boolean") setBusyOverlay(message.busy);
                 sendResponse({ ready: true, url: window.location.href, status: getPageHttpStatus(), doc: DOCUMENT_TOKEN,
-                    readyState: document.readyState });
+                    readyState: document.readyState, visibility: document.visibilityState });
                 break;
             case "detailsPickerStart":
                 stopFullPageScroll();
