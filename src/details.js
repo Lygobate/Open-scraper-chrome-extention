@@ -20,9 +20,9 @@
     // After opening a URL, the page is not asked anything before its load begins or this delay
     // has passed (a change of the #fragment only begins no load)
     const LOAD_START_WAIT_MS = 300;
-    // Once a page has loaded (and Min has passed), longest extra wait for the fields not shown
-    // yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
-    // every field are read at once.
+    // Safe mode: once a page has loaded (and Min has passed), longest extra wait for the fields not
+    // shown yet (content drawn late by scripts); never beyond the Max limit. Pages that already show
+    // every field are read at once. Fast reads once the page has loaded and Min has passed, whatever is missing.
     const LATE_FIELDS_WAIT_MS = 5000;
     // Longest wait for the page shown to tell which document it is, before a run opens the next URL
     const OLD_DOCUMENT_PING_MS = 500;
@@ -61,6 +61,9 @@
     const LEGACY_FIELD_SETS_KEY = "pageDetailsFieldSets";
     const TEMPLATE_FORMAT = "open-scraper-page-details-template";
     const TEMPLATE_VERSION = 1;
+    // Wait bounds of a page, in seconds, for every template that has none of its own (new, imported
+    // without them, older saved field sets). Min stays at 2: below it, a run reaches about 60 pages
+    // per minute, which sites behind Cloudflare answer with a challenge page.
     const DEFAULT_WAIT = { min: 2, max: 30 };
     const MAX_TEMPLATE_FIELDS = 200;
     // Value of the "+ New template…" entry of the template drop-down
@@ -106,6 +109,10 @@
         nextIndex: 0,
         extracted: 0,
         failed: 0,
+        // Retry of the pages that could not be read: indexes of the rows left to visit again (null
+        // when no retry is under way), and pages visited again so far (counted in the speed)
+        retryQueue: null,
+        retried: 0,
         running: false,
         runId: 0,
         resolveStop: null,
@@ -861,14 +868,36 @@
     }
 
     /**
-     * Brings two wait bounds in range: integers >= 0 with min <= max.
+     * Returns the read mode of a template: "safe" only when it says so (Fast is the default, also
+     * for templates saved before the option existed).
+     * @param {*} mode - Saved value.
+     * @returns {"fast"|"safe"} Mode.
+     */
+    function normalizeMode(mode) {
+        return mode === "safe" ? "safe" : "fast";
+    }
+
+    /**
+     * Reads a number of seconds, saved or typed ("2.5", or "2,5" with a comma), rounded to the
+     * nearest half second, at most one hour.
+     * @param {*} value - Raw value.
+     * @returns {number} Seconds, or NaN when it is not a number >= 0.
+     */
+    function parseSeconds(value) {
+        const number = parseFloat(String(value == null ? "" : value).trim().replace(",", "."));
+        return Number.isFinite(number) && number >= 0 ? Math.min(Math.round(number * 2) / 2, 3600) : NaN;
+    }
+
+    /**
+     * Brings two wait bounds in range: half seconds >= 0 with min <= max (DEFAULT_WAIT for a
+     * missing or unreadable bound).
      * @param {*} wait - Raw {min, max}.
      * @returns {{min: number, max: number}} Bounds in seconds.
      */
     function normalizeWait(wait) {
         const read = (value, fallback) => {
-            const number = parseInt(value, 10);
-            return Number.isFinite(number) && number >= 0 ? Math.min(number, 3600) : fallback;
+            const seconds = parseSeconds(value);
+            return Number.isNaN(seconds) ? fallback : seconds;
         };
         const min = read(wait && wait.min, DEFAULT_WAIT.min);
         return { min: min, max: Math.max(min, read(wait && wait.max, DEFAULT_WAIT.max)) };
@@ -915,6 +944,8 @@
             wait: normalizeWait(raw.wait),
             // "Load full page": off for templates saved before it existed
             fullPage: raw.fullPage === true,
+            // Fast (default) or Safe: see the Options of the run
+            mode: normalizeMode(raw.mode),
             renames: renames,
             createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,
             updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : now
@@ -1126,8 +1157,8 @@
 
     /**
      * Saves a new template and selects it. Its name is made unique on its domain.
-     * @param {{domain: string, name: string, fields: Object[], wait: Object, fullPage: boolean, renames: Object}} props -
-     *     Content of the template (wait, fullPage and renames are optional).
+     * @param {{domain: string, name: string, fields: Object[], wait: Object, fullPage: boolean, mode: string, renames: Object}} props -
+     *     Content of the template (wait, fullPage, mode and renames are optional).
      * @returns {Promise<Object|null>} Saved template, or null when it could not be saved.
      */
     async function addTemplate(props) {
@@ -1140,6 +1171,7 @@
             fields: props.fields,
             wait: normalizeWait(props.wait || DEFAULT_WAIT),
             fullPage: props.fullPage === true,
+            mode: normalizeMode(props.mode),
             renames: props.renames || {},
             createdAt: now,
             updatedAt: now
@@ -1176,7 +1208,7 @@
     async function duplicateTemplate(template) {
         const copy = JSON.parse(JSON.stringify(template));
         const created = await addTemplate({ domain: copy.domain, name: copy.name + " (copy)", fields: copy.fields, wait: copy.wait,
-            fullPage: copy.fullPage, renames: copy.renames });
+            fullPage: copy.fullPage, mode: copy.mode, renames: copy.renames });
         if (created) showMessage("detailsPickMessage", "Template \"" + template.name + "\" duplicated as \"" + created.name + "\".");
     }
 
@@ -1261,6 +1293,7 @@
                 fields: template.fields,
                 wait: template.wait,
                 fullPage: template.fullPage,
+                mode: template.mode,
                 renames: template.renames,
                 createdAt: template.createdAt,
                 updatedAt: template.updatedAt
@@ -2005,24 +2038,97 @@
     // --- Step 3: run ---
 
     /**
-     * Shows the options of a template (wait bounds, "Load full page") in the inputs.
-     * @param {{wait: Object, fullPage: boolean}} template - Template.
+     * Shows the options of a template (wait bounds, "Load full page", Fast/Safe) in the inputs.
+     * @param {{wait: Object, fullPage: boolean, mode: string}} template - Template.
      */
     function applyOptionsToInputs(template) {
         const bounds = normalizeWait(template.wait);
         $id("detailsMinWait").value = String(bounds.min);
         $id("detailsMaxWait").value = String(bounds.max);
         $id("detailsFullPage").checked = template.fullPage === true;
+        showMode(normalizeMode(template.mode));
         updateOptionsSummary();
     }
 
     /**
-     * Writes the options in the header of the closed options panel ("Wait 2–30 s · Load full page: off").
+     * Tooltips for the small "i" icons (class osd-info, text in data-tip): shown on hover and keyboard focus,
+     * kept inside the window. Native title tooltips do not appear in the extension window.
+     */
+    function initInfoTips() {
+        const tip = document.createElement("div");
+        tip.className = "osd-tip";
+        tip.setAttribute("role", "tooltip");
+        tip.hidden = true;
+        document.body.appendChild(tip);
+        const hide = () => { tip.hidden = true; };
+        const show = icon => {
+            tip.textContent = icon.dataset.tip;
+            tip.hidden = false;
+            const margin = 8;
+            const rect = icon.getBoundingClientRect();
+            const width = tip.offsetWidth;
+            const height = tip.offsetHeight;
+            const left = Math.max(margin, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - margin));
+            const below = rect.bottom + 6;
+            const top = below + height + margin <= window.innerHeight ? below : Math.max(margin, rect.top - height - 6);
+            tip.style.left = left + "px";
+            tip.style.top = top + "px";
+        };
+        document.querySelectorAll(".osd-info[data-tip]").forEach(icon => {
+            ["mouseenter", "focus"].forEach(type => icon.addEventListener(type, () => show(icon)));
+            ["mouseleave", "blur"].forEach(type => icon.addEventListener(type, hide));
+            icon.addEventListener("keydown", event => { if (event.key === "Escape") hide(); });
+        });
+        document.addEventListener("scroll", hide, true);
+    }
+
+    /**
+     * Writes the options in the header of the closed options panel ("Wait 2–30 s · Load full page: off · Mode: ⚡ Fast").
      */
     function updateOptionsSummary() {
         const wait = getWait();
-        $id("detailsOptionsSummary").textContent = "Wait " + (wait.min === wait.max ? wait.min : wait.min + "–" + wait.max) +
-            " s · Load full page: " + ($id("detailsFullPage").checked ? "on" : "off");
+        const on = $id("detailsFullPage").checked;
+        const state = document.createElement("span");
+        state.className = on ? "is-on" : "is-off";
+        state.textContent = on ? "on" : "off";
+        const safe = getMode() === "safe";
+        const mode = document.createElement("span");
+        mode.className = safe ? "is-safe" : "is-fast";
+        mode.textContent = safe ? "\u{1F6E1}\uFE0F Safe" : "\u26A1 Fast";
+        $id("detailsOptionsSummary").replaceChildren("Wait " + (wait.min === wait.max ? wait.min : wait.min + "–" + wait.max) +
+            " s · Load full page: ", state, " · Mode: ", mode);
+    }
+
+    /**
+     * Reads the Fast / Safe choice of the options.
+     * @returns {"fast"|"safe"} Mode.
+     */
+    function getMode() {
+        const active = document.querySelector(".osd-seg[data-mode].is-active");
+        return normalizeMode(active && active.dataset.mode);
+    }
+
+    /**
+     * Marks one of the Fast / Safe buttons as the chosen one.
+     * @param {"fast"|"safe"} mode - Mode to show.
+     */
+    function showMode(mode) {
+        document.querySelectorAll(".osd-seg[data-mode]").forEach(button => {
+            const active = button.dataset.mode === mode;
+            button.classList.toggle("is-active", active);
+            button.setAttribute("aria-pressed", String(active));
+        });
+    }
+
+    /**
+     * Saves the Fast / Safe choice in the template.
+     * @param {"fast"|"safe"} mode - Mode chosen.
+     */
+    function onModeChanged(mode) {
+        showMode(mode);
+        updateOptionsSummary();
+        const template = getSelectedTemplate();
+        if (template) updateTemplate(template.id, t => { t.mode = mode; });
     }
 
     /**
@@ -2044,15 +2150,21 @@
     }
 
     /**
-     * Keeps min <= max (raising Min raises Max, lowering Max lowers Min) and saves both in the template.
+     * Keeps min <= max (raising Min raises Max, lowering Max lowers Min), rounds both to the half
+     * second and saves them in the template. A value that is not a number gets back the saved one.
      * @param {"min"|"max"} changed - Input the user changed.
      */
     function onWaitChanged(changed) {
         const minInput = $id("detailsMinWait");
         const maxInput = $id("detailsMaxWait");
-        const read = input => Math.max(0, parseInt(input.value, 10) || 0);
-        let min = read(minInput);
-        let max = read(maxInput);
+        const selected = getSelectedTemplate();
+        const saved = normalizeWait(selected ? selected.wait : DEFAULT_WAIT);
+        const read = (input, fallback) => {
+            const seconds = parseSeconds(input.value);
+            return Number.isNaN(seconds) ? fallback : seconds;
+        };
+        let min = read(minInput, saved.min);
+        let max = read(maxInput, saved.max);
         if (min > max) {
             if (changed === "min") max = min;
             else min = max;
@@ -2076,6 +2188,8 @@
         state.nextIndex = 0;
         state.extracted = 0;
         state.failed = 0;
+        state.retryQueue = null;
+        state.retried = 0;
         state.elapsedMs = 0;
         state.speed = "";
         showMessage("detailsRunMessage", "");
@@ -2125,19 +2239,21 @@
     }
 
     /**
-     * Works out the speed shown once a row is added: rows per minute of run time (the time
-     * while stopped does not count, as in the duration).
+     * Works out the speed shown once a row is added or filled again: pages per minute of run
+     * time (the time while stopped does not count, as in the duration; pages visited again by a
+     * retry count).
      */
     function updateSpeed() {
         const minutes = getElapsedMs() / 60000;
-        state.speed = minutes > 0 ? (state.results.length / minutes).toFixed(1) + " / min" : "";
+        state.speed = minutes > 0 ? ((state.results.length + state.retried) / minutes).toFixed(1) + " / min" : "";
     }
 
     /**
-     * Counts the valid URLs not visited yet.
+     * Counts the valid URLs not visited yet (during a retry, the pages left to visit again).
      * @returns {number} Remaining pages.
      */
     function getRemaining() {
+        if (state.retryQueue) return state.retryQueue.length;
         return state.urls.slice(state.nextIndex).filter(url => isUsableUrl(url.trim())).length;
     }
 
@@ -2155,6 +2271,10 @@
         toggle.classList.toggle("osd-btn-danger", state.running);
         toggle.disabled = !state.running && (state.picking || !canOpenStep(3));
         $id("detailsReset").disabled = isBusy() || !hasRunProgress();
+        const retry = $id("detailsRetryFailed");
+        retry.hidden = !state.failed;
+        retry.disabled = isBusy();
+        retry.textContent = "Retry failed pages (" + state.failed + ")";
         if ($id("detailsReset").disabled) closePrompt("detailsResetPrompt");
         const count = state.results.length;
         $id("detailsResultCount").textContent = count ? plural(count, "row") : "One row per page, URL first.";
@@ -2193,7 +2313,7 @@
         $id("tabList").disabled = state.running;
         $id("tabDetails").disabled = state.running;
         document.querySelectorAll(".osd-seg[data-source]").forEach(button => { button.disabled = busy; });
-        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinWait", "detailsMaxWait", "detailsFullPage", "detailsToStep2"].forEach(id => {
+        ["detailsCsvFile", "detailsPasteUrls", "detailsUrlColumn", "detailsMinWait", "detailsMaxWait", "detailsFullPage", "detailsModeFast", "detailsModeSafe", "detailsToStep2"].forEach(id => {
             $id(id).disabled = busy || (id === "detailsToStep2" && !state.validUrls.length);
         });
         renderTemplateSelect();
@@ -2202,10 +2322,14 @@
     }
 
     /**
-     * Starts the run or resumes it at the next page to visit.
+     * Starts the run or resumes it at the next page to visit. With retry, visits again only the
+     * pages that could not be read, in order, and fills their rows in place (the run itself
+     * still resumes where it was on Start).
+     * @param {{retry: boolean}} [options] - retry: visit the failed pages again.
      */
-    async function startRun() {
-        if (isBusy()) return;
+    async function startRun(options) {
+        const retry = !!(options && options.retry);
+        if (isBusy() || (retry && !state.failed)) return;
         closePrompt("detailsResetPrompt");
         if (isListCrawlRunning()) {
             showMessage("detailsRunMessage", 'Stop the crawl of the "Extract list" tab first.', "warning");
@@ -2217,7 +2341,7 @@
             showMessage("detailsRunMessage", "The target tab was closed. Close this window and click the extension icon again.", "error");
             return;
         }
-        if (state.nextIndex >= state.urls.length) resetResults();
+        if (!retry && state.nextIndex >= state.urls.length) resetResults();
 
         sendToTab({ action: "detailsClearHighlights" });
         const runId = ++state.runId;
@@ -2229,22 +2353,26 @@
         // Token of the document the tab shows after the last page, so that the next one needs no
         // question to the page before it opens (null: not known)
         let pageDoc = null;
+        // Rows to visit: the next URLs, or the rows that failed (retry)
+        state.retryQueue = retry ? state.results.map((row, i) => (row.failed ? i : -1)).filter(i => i >= 0) : null;
         state.running = true;
         state.runStartedAt = Date.now();
         state.ticker = setInterval(updateRunUi, 1000);
         showMessage("detailsRunMessage", "");
         updateBusyUi();
 
-        while (state.nextIndex < state.urls.length) {
-            const index = state.nextIndex;
-            const url = state.urls[index].trim();
-            const row = { url: state.urls[index], values: {}, failed: false };
+        for (;;) {
+            const index = retry ? (state.retryQueue.length ? state.retryQueue[0] : -1) : (state.nextIndex < state.urls.length ? state.nextIndex : -1);
+            if (index < 0) break;
+            const row = { url: retry ? state.results[index].url : state.urls[index], values: {}, failed: false };
+            const url = String(row.url).trim();
             if (isUsableUrl(url)) {
                 // The page takes at least Min seconds and at most about Max seconds. It is read
-                // once parsed: the content script waits for Min and for the fields drawn late,
-                // after scrolling through the page with "Load full page".
+                // once parsed: the content script waits for Min and the load, then reads at once (Fast) or also
+                // waits for the fields drawn late (Safe), after scrolling through the page with "Load full page".
                 const wait = getWait();
                 const fullPage = $id("detailsFullPage").checked;
+                const safe = getMode() === "safe";
                 const pageStart = Date.now();
                 const limitMs = Math.max(1, wait.max) * 1000;
                 const minEnd = pageStart + wait.min * 1000;
@@ -2255,16 +2383,17 @@
                 let response;
                 if (ready) {
                     if (fullPage) await showTargetTabIfHidden();
-                    const awaited = learned.map(field => field.late || field.absentPages < ABSENT_FIELD_PAGES ||
+                    // Fast waits for no field, so it learns nothing about the absent ones
+                    const awaited = learned.map(field => !safe || field.late || field.absentPages < ABSENT_FIELD_PAGES ||
                         field.skippedPages >= field.recheckPages);
                     response = await Promise.race([
                         sendToTabWithRetry({ action: "detailsExtract", fields: fields, busy: true, awaited: awaited, fullPage: fullPage,
-                            notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: LATE_FIELDS_WAIT_MS,
+                            mode: safe ? "safe" : "fast", notBeforeMs: Math.max(0, minEnd - Date.now()), lateMs: safe ? LATE_FIELDS_WAIT_MS : 0,
                             limitMs: Math.max(0, pageStart + limitMs - Date.now()) }, 2000, isStopped),
                         stopped.then(() => undefined)
                     ]);
                     if (isStopped()) return;
-                    if (response && response.ok && Array.isArray(response.values)) learnFields(learned, awaited, response);
+                    if (safe && response && response.ok && Array.isArray(response.values)) learnFields(learned, awaited, response);
                 }
                 if (Date.now() < minEnd) {
                     // Error page or no answer: the page still takes Min seconds
@@ -2279,10 +2408,19 @@
                     state.failed++;
                 }
             }
-            state.results.push(row);
-            state.nextIndex = index + 1;
+            if (retry) {
+                // The row replaced was a failed one; the new one was counted above
+                state.failed--;
+                state.results[index] = row;
+                state.retryQueue.shift();
+                state.retried++;
+                replaceGridRow(index, row);
+            } else {
+                state.results.push(row);
+                state.nextIndex = index + 1;
+                appendGridRow(row);
+            }
             updateSpeed();
-            appendGridRow(row);
             updateRunUi();
         }
         finishRun(runId, state.failed ? plural(state.failed, "page") +
@@ -2290,16 +2428,17 @@
     }
 
     /**
-     * Notes, after a page of a run, which fields showed late and which stayed absent after the
-     * full wait (see ABSENT_FIELD_PAGES).
+     * Notes, after a page of a run, which fields showed late (in Safe mode, a value that did not
+     * come from the final read, flash, counts as late) and which stayed absent after the full wait
+     * (see ABSENT_FIELD_PAGES).
      * @param {Array<{absentPages: number, skippedPages: number, recheckPages: number, late: boolean}>} learned - Per
      *     field, updated in place.
      * @param {boolean[]} awaited - Per field, whether the page waited for it.
-     * @param {{values: Array, complete: boolean, late: boolean[]}} response - Page answer.
+     * @param {{values: Array, complete: boolean, late: boolean[], flash: boolean[]}} response - Page answer.
      */
     function learnFields(learned, awaited, response) {
         learned.forEach((field, i) => {
-            if (response.late && response.late[i]) {
+            if ((response.late && response.late[i]) || (response.flash && response.flash[i])) {
                 field.late = true;
                 field.absentPages = 0;
             } else if (awaited[i]) {
@@ -2322,7 +2461,8 @@
         if (!state.running) return;
         const resolveStop = state.resolveStop;
         state.runId++;
-        finishRun(state.runId, "Stopped. Start continues with page " + (state.nextIndex + 1) + ".", "info");
+        const resume = state.nextIndex < state.urls.length ? " Start continues with page " + (state.nextIndex + 1) + "." : "";
+        finishRun(state.runId, (state.retryQueue ? "Retry stopped." : "Stopped.") + resume, "info");
         if (resolveStop) resolveStop();
     }
 
@@ -2337,6 +2477,7 @@
         state.elapsedMs += Date.now() - state.runStartedAt;
         state.running = false;
         state.resolveStop = null;
+        state.retryQueue = null;
         clearInterval(state.ticker);
         sendToTab({ action: "detailsBusy", on: false });
         showMessage("detailsRunMessage", message, level);
@@ -2490,7 +2631,7 @@
                 const statTip = counts.rows ? ' title="' + filled + " of " + counts.rows + ' rows have a value"' : "";
                 const show = col > 0 ? '<button type="button" class="osd-col-action" data-col-action="show" data-col="' + col +
                     '" title="Show in page">&#9673;</button>' : "";
-                return '<span class="osd-col-stat' + (counts.rows && filled < counts.rows ? " is-partial" : "") + '"' + statTip + ">" + stat + "</span>" +
+                return '<span class="osd-col-stat' + (counts.rows && filled < counts.rows ? " is-partial" : counts.rows ? " is-complete" : "") + '"' + statTip + ">" + stat + "</span>" +
                     '<span class="osd-col-head"><span class="osd-col-name" title="' + name + '">' + name + "</span>" +
                     '<button type="button" class="osd-col-action" data-col-action="rename" data-col="' + col +
                     '" title="Rename column">&#9998;</button>' + show + "</span>";
@@ -2525,6 +2666,25 @@
         state.gridData.push(toGridRow(template, result));
         state.grid.render();
         if (holder) setGridScroll(holder, left, atBottom ? holder.scrollHeight : holder.scrollTop);
+    }
+
+    /**
+     * Shows a row filled again (retry of a failed page) at its place in the grid, without
+     * rebuilding it or moving the view; the column stats are counted again.
+     * @param {number} index - Row index.
+     * @param {Object} result - New result.
+     */
+    function replaceGridRow(index, result) {
+        const template = getSelectedTemplate();
+        state.filledCounts = null;
+        if (!state.grid || !template || !Array.isArray(state.gridData[index])) {
+            rebuildGridIfNeeded(true);
+            return;
+        }
+        // The grid keeps the row arrays it was given: the row is changed in place
+        const cells = state.gridData[index];
+        cells.splice(0, cells.length, ...toGridRow(template, result));
+        state.grid.render();
     }
 
     /**
@@ -2725,7 +2885,12 @@
     $id("detailsMinWait").addEventListener("change", () => onWaitChanged("min"));
     $id("detailsMaxWait").addEventListener("change", () => onWaitChanged("max"));
     $id("detailsFullPage").addEventListener("change", onFullPageChanged);
+    document.querySelectorAll(".osd-seg[data-mode]").forEach(button => {
+        button.addEventListener("click", () => onModeChanged(normalizeMode(button.dataset.mode)));
+    });
+    initInfoTips();
     $id("detailsRunToggle").addEventListener("click", () => (state.running ? stopRun() : startRun()));
+    $id("detailsRetryFailed").addEventListener("click", () => startRun({ retry: true }));
     ["mousedown", "click"].forEach(type => $id("detailsHot").addEventListener(type, onGridHeaderAction, true));
 
     $id("detailsCsv").addEventListener("click", () => exportResults("csv"));

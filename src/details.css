@@ -374,6 +374,15 @@ body.mode-details .details-panel {
     border-color: rgba(244, 63, 94, 0.35);
 }
 
+.osd-btn.osd-btn-retry {
+    flex: 0 0 auto;
+    height: 36px;
+    padding: 0 12px;
+    color: var(--accent-amber);
+    background: var(--accent-amber-dim);
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
 .osd-btn.osd-btn-reset:hover:not(:disabled) {
     color: #fff;
     background: var(--accent-rose);
@@ -1001,6 +1010,33 @@ body.mode-details .details-panel {
     text-overflow: ellipsis;
 }
 
+.osd-options-summary .is-on {
+    color: var(--accent-emerald);
+}
+
+.osd-options-summary .is-off {
+    color: var(--accent-rose);
+}
+
+/* Fast / Safe mode: yellow / green, in the summary and on the chosen button */
+.osd-options-summary .is-fast,
+.osd-seg[data-mode="fast"].is-active {
+    color: var(--accent-amber);
+}
+
+.osd-seg[data-mode="fast"].is-active {
+    background: var(--accent-amber-dim);
+}
+
+.osd-options-summary .is-safe,
+.osd-seg[data-mode="safe"].is-active {
+    color: var(--accent-emerald);
+}
+
+.osd-seg[data-mode="safe"].is-active {
+    background: var(--accent-emerald-dim);
+}
+
 .osd-options[open] .osd-options-summary {
     display: none;
 }
@@ -1079,7 +1115,7 @@ body.mode-details .details-panel {
     cursor: not-allowed;
 }
 
-/* Small "i" in a circle that shows its explanation on hover */
+/* Small "i" in a circle; its explanation (data-tip) shows in .osd-tip on hover and keyboard focus */
 .osd-info {
     display: inline-flex;
     align-items: center;
@@ -1102,6 +1138,22 @@ body.mode-details .details-panel {
     border-color: var(--accent-teal);
 }
 
+.osd-tip {
+    position: fixed;
+    z-index: 1000;
+    max-width: 280px;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    color: var(--text-primary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-glass-active);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    pointer-events: none;
+}
+
 .osd-results-head {
     margin-top: 14px;
 }
@@ -1119,6 +1171,9 @@ body.mode-details .details-panel {
 }
 .osd-hot .osd-col-stat.is-partial {
     color: var(--accent-amber);
+}
+.osd-hot .osd-col-stat.is-complete {
+    color: var(--accent-emerald);
 }
 
 .osd-hot-wrap {

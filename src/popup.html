@@ -201,35 +201,44 @@
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsExtracted">0</span><span class="osd-counter-label">extracted</span></div>
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsRemaining">0</span><span class="osd-counter-label">remaining</span></div>
                 <div class="osd-counter"><span class="osd-counter-value" id="detailsDuration">00:00</span><span class="osd-counter-label">duration</span></div>
-                <div class="osd-counter" title="Pages per minute: rows added divided by the run time"><span class="osd-counter-value" id="detailsSpeed">–</span><span class="osd-counter-label">speed</span></div>
+                <div class="osd-counter" title="Pages per minute: pages read (rows added, failed pages visited again) divided by the run time"><span class="osd-counter-value" id="detailsSpeed">–</span><span class="osd-counter-label">speed</span></div>
             </div>
             <details class="osd-options" id="detailsOptions">
                 <summary>
                     <span class="osd-options-chevron" aria-hidden="true"></span>
                     <span class="osd-options-title">Options</span>
-                    <span class="osd-options-summary" id="detailsOptionsSummary">Wait 2–30 s · Load full page: off</span>
+                    <span class="osd-options-summary" id="detailsOptionsSummary">Wait 2–30 s · Load full page: off · Mode: <span class="is-fast">&#x26A1; Fast</span></span>
                 </summary>
                 <div class="osd-options-body">
                     <div class="osd-row">
                         <span class="osd-label">Page load wait</span>
-                        <label class="osd-inline-input">Min <input type="number" id="detailsMinWait" class="osd-input osd-number" min="0" step="1" value="2"></label>
-                        <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="1" value="30"></label>
+                        <label class="osd-inline-input">Min <input type="number" id="detailsMinWait" class="osd-input osd-number" min="0" step="0.5" value="2"></label>
+                        <label class="osd-inline-input">Max <input type="number" id="detailsMaxWait" class="osd-input osd-number" min="0" step="0.5" value="30"></label>
                         <span class="osd-hint osd-hint-inline">seconds</span>
+                        <span class="osd-info" id="detailsWaitInfo" tabindex="0" role="note" data-tip="Min is the shortest a page takes: raise it for pages that show their content late. Max is the longest a page can take. Fast reads each page once it has loaded and Min has passed. Safe also waits for fields drawn late." aria-label="Min is the shortest a page takes: raise it for pages that show their content late. Max is the longest a page can take. Fast reads each page once it has loaded and Min has passed. Safe also waits for fields drawn late.">i</span>
                     </div>
-                    <p class="osd-hint">Each page is read as soon as it shows the fields, but not before Min seconds: raise Min for pages that show their content late. Max is the longest a page can take.</p>
                     <div class="osd-row">
-                        <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">
+                        <span class="osd-label">Mode</span>
+                        <div class="osd-segmented" role="group" aria-label="Mode: Fast or Safe" aria-describedby="detailsModeInfo">
+                            <button type="button" class="osd-seg is-active" id="detailsModeFast" data-mode="fast" aria-pressed="true">&#x26A1; Fast</button>
+                            <button type="button" class="osd-seg" id="detailsModeSafe" data-mode="safe" aria-pressed="false">&#x1F6E1;&#xFE0F; Safe</button>
+                        </div>
+                        <span class="osd-info" id="detailsModeInfo" tabindex="0" role="note" data-tip="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete." aria-label="Fast reads each page as soon as it has loaded and Min seconds have passed, without waiting for missing fields: the quickest, but content drawn late can be missed. Safe waits for the page to finish loading and for missing fields to show, then reads once more before leaving the page: slower, but more complete.">i</span>
+                    </div>
+                    <div class="osd-row">
+                        <label class="osd-switch" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read.">
                             <input type="checkbox" role="switch" id="detailsFullPage" aria-describedby="detailsFullPageInfo">
                             <span class="osd-switch-track" aria-hidden="true"></span>
                             <span class="osd-switch-label">Load full page</span>
                         </label>
-                        <span class="osd-info" id="detailsFullPageInfo" tabindex="0" role="note" title="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer." aria-label="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. It can take a little longer.">i</span>
+                        <span class="osd-info" id="detailsFullPageInfo" tabindex="0" role="note" data-tip="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read." aria-label="Some sites don&#39;t load all of a page&#39;s content until you scroll, so some elements can&#39;t be extracted. Turn this on to load the whole page before reading it. This can slow scraping noticeably: each page is scrolled to the bottom before it is read.">i</span>
                     </div>
-                    <p class="osd-hint">Saved in the template.</p>
+                    <p class="osd-hint">Slower: every page is scrolled to the bottom before it is read. Saved in the template.</p>
                 </div>
             </details>
             <div class="osd-run-buttons">
                 <button type="button" class="osd-btn osd-btn-primary osd-btn-xl osd-btn-block" id="detailsRunToggle">Start</button>
+                <button type="button" class="osd-btn osd-btn-retry" id="detailsRetryFailed" title="Visit again the pages that could not be read and fill their rows" hidden>Retry failed pages (0)</button>
                 <button type="button" class="osd-btn osd-btn-reset" id="detailsReset" title="Delete the extracted rows and start again from the first URL"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4M6.6 6.5v4.5M9.4 6.5v4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Reset</button>
             </div>
             <form class="osd-prompt osd-prompt-question" id="detailsResetPrompt" hidden>

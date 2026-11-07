@@ -2375,10 +2375,13 @@
      *   wait or from the load, whichever comes last (so a page is never read earlier than when
      *   it had loaded and Min had passed);
      * - never beyond limitMs (the Max limit of the run).
+     * With the Fast mode, none of the waits for missing fields holds: the fields are read once the
+     * page has loaded and notBeforeMs has passed (or limitMs), whatever is missing.
      * @param {Array<{kind: string, selectors: string[]}>} fields - Fields.
-     * @param {{notBeforeMs: number, lateMs: number, limitMs: number, awaited: boolean[]}} options -
+     * @param {{notBeforeMs: number, lateMs: number, limitMs: number, awaited: boolean[], mode: string, onValues: Function}} options -
      *     Times in milliseconds from now; awaited tells, per field, whether a missing value holds
-     *     the page up (all of them when not given).
+     *     the page up (all of them when not given); mode "fast" reads once loaded (see above);
+     *     onValues is called with the values of every read of the page (optional).
      * @returns {Promise<{values: string[], complete: boolean, late: boolean[]}>} Values; complete
      *     when every awaited field has one; late, per field, when its value only showed after the
      *     first check.
@@ -2389,8 +2392,14 @@
         var limitMs = Number(options.limitMs);
         var hardEnd = started + (limitMs >= 0 ? limitMs : 30000);
         var lateMs = Math.max(0, Number(options.lateMs) || 0);
+        var fast = options.mode === "fast";
         var awaited = fields.map(function(field, i) { return !Array.isArray(options.awaited) || options.awaited[i] !== false; });
-        var readValues = function() { return extractPageDetails(fields); };
+        var onValues = typeof options.onValues === "function" ? options.onValues : null;
+        var readValues = function() {
+            var read = extractPageDetails(fields);
+            if (onValues) onValues(read);
+            return read;
+        };
         var values = readValues();
         var missingAtStart = values.map(function(value) { return !value; });
         var valuesKey = JSON.stringify(values);
@@ -2434,6 +2443,8 @@
                 var next = hardEnd;
                 if (now < minEnd) {
                     next = minEnd;
+                } else if (fast) {
+                    if (loadedAt) return finish(complete);
                 } else if (complete) {
                     if (loadedAt || now - valuesChangedAt >= FIELD_STABLE_MS) return finish(true);
                     next = valuesChangedAt + FIELD_STABLE_MS;
@@ -2455,19 +2466,26 @@
 
     // --- Load full page (option of a template) ---
 
-    // Pause after each jump down, so that the page's lazy loaders see the part shown and start
-    var FULL_PAGE_STEP_PAUSE_MS = 120;
-    // At the bottom, the page counts as fully loaded once its height has not grown for this long
-    // (and, in a run, once its Min wait has passed: content may still be drawn after the load)
-    var FULL_PAGE_STABLE_MS = 500;
+    // Timings of the scroll for each mode of a run (Fast / Safe option); the preview, which gives
+    // no mode, scrolls like Safe:
+    // - stepPauseMs: pause after each jump down, so that the page's lazy loaders see the part shown and start;
+    // - pollMs: pause between two checks when not jumping (looking for a scroller, waiting at the bottom);
+    // - stableMs: at the bottom, the page counts as fully loaded once its height has not grown for
+    //   this long (and, in a run, once its Min wait has passed: content may still be drawn after the load);
+    // - waitForLoad: wait for the page's load event (at most FULL_PAGE_LOAD_WAIT_MS) before scrolling,
+    //   as its scripts set up the lazy loaders; else the scroll starts as soon as the page is parsed
+    //   (it overlaps the loading);
+    // - endAfterLoad: the end of the page is not concluded before the load event has fired (always
+    //   true for Safe, which waited for it before scrolling).
+    var FULL_PAGE_TIMING = {
+        safe: { stepPauseMs: 120, pollMs: 120, stableMs: 500, waitForLoad: true, endAfterLoad: false },
+        fast: { stepPauseMs: 80, pollMs: 50, stableMs: 200, waitForLoad: false, endAfterLoad: true }
+    };
     // Longest wait for the page's load event before scrolling (its scripts set up the lazy loaders)
     var FULL_PAGE_LOAD_WAIT_MS = 5000;
     // A page that does not scroll yet (content still drawn after load) is watched this long for one
     // (longer when the Min wait of the run is longer)
     var FULL_PAGE_SCROLLER_WAIT_MS = 1000;
-    // A run whose fields are still missing after the scroll scrolls once more when at least this
-    // much of its time limit is left
-    var FULL_PAGE_RETRY_MIN_MS = 2000;
     // Most jumps on one page: a page that keeps growing (endless feed) is read after that
     var FULL_PAGE_MAX_STEPS = 150;
     // Each new scroll, and every stop of the scraping window, ends the scroll under way
@@ -2507,17 +2525,22 @@
     /**
      * "Load full page": scrolls the page down to its very end, one window at a time, so that
      * the content shown only once scrolled to (lazy images, reviews, comments, related items)
-     * is there, then scrolls back to where it was. Waits first for the page's load event (at
-     * most FULL_PAGE_LOAD_WAIT_MS), as its scripts set up the lazy loaders. The end counts as
-     * reached once the page has not grown for FULL_PAGE_STABLE_MS at the bottom, and never
-     * before minMs have passed: until then the page is watched, and scrolled again when a
+     * is there, then scrolls back to where it was. With the Safe timings, waits first for the page's
+     * load event (at most FULL_PAGE_LOAD_WAIT_MS), as its scripts set up the lazy loaders; the Fast
+     * ones scroll as soon as the page is parsed. The end counts as reached once the page has not
+     * grown for the timing's stableMs at the bottom, and never before minMs have passed (nor, with
+     * the Fast timings, before the load event): until then the page is watched, and scrolled again when a
      * scroller shows up or the page grows (a page still short or empty when the scroll starts).
      * @param {number} limitMs - Longest time, in milliseconds.
      * @param {number} [minMs] - Shortest time, in milliseconds (the Min wait of a run).
+     * @param {string} [mode] - "fast" for the Fast timings (see FULL_PAGE_TIMING), else Safe.
+     * @param {Function} [onStep] - Called at each check of the scroll, and once at the end before
+     *     scrolling back (a run in Safe mode reads the fields there).
      * @returns {Promise<{bottom: boolean, steps: number, cancelled: boolean}>} Whether the end
      *     was reached, the jumps made, and whether the scroll was stopped (stopFullPageScroll).
      */
-    function scrollThroughPage(limitMs, minMs) {
+    function scrollThroughPage(limitMs, minMs, mode, onStep) {
+        var timing = mode === "fast" ? FULL_PAGE_TIMING.fast : FULL_PAGE_TIMING.safe;
         var token = ++fullPageScrollToken;
         var end = Date.now() + Math.max(0, Number(limitMs) || 0);
         var minEnd = Date.now() + Math.max(0, Number(minMs) || 0);
@@ -2533,8 +2556,10 @@
             var jumpedFrom = -1;
             var stuckJumps = 0;
             var startedAt = Date.now();
+            var loadedEnough = function() { return !timing.endAfterLoad || document.readyState === "complete"; };
             var finish = function(bottom) {
                 var cancelled = token !== fullPageScrollToken;
+                if (onStep && !cancelled) onStep();
                 // Back to where the page was, unless a newer scroll took over
                 if (scroller && !cancelled) scroller.scrollTo({ top: startTop, behavior: "instant" });
                 resolve({ bottom: bottom, steps: steps, cancelled: cancelled });
@@ -2543,12 +2568,13 @@
                 if (token !== fullPageScrollToken) return finish(false);
                 var now = Date.now();
                 if (now >= end) return finish(false);
+                if (onStep) onStep();
                 if (!scroller) {
                     // Nothing scrolls yet: the page may still be drawing its content
                     scroller = findPageScroller();
                     if (!scroller) {
-                        if (now - startedAt >= FULL_PAGE_SCROLLER_WAIT_MS && now >= minEnd) return finish(true);
-                        return setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
+                        if (now - startedAt >= FULL_PAGE_SCROLLER_WAIT_MS && now >= minEnd && loadedEnough()) return finish(true);
+                        return setTimeout(step, timing.pollMs);
                     }
                     startTop = scroller.scrollTop;
                     lastHeight = scroller.scrollHeight;
@@ -2566,15 +2592,15 @@
                 }
                 if (top + scroller.clientHeight >= height - 2 || stuckJumps >= 3) {
                     if (!bottomSince) bottomSince = now;
-                    if (now >= minEnd && now - Math.max(bottomSince, heightSince) >= FULL_PAGE_STABLE_MS) return finish(true);
-                    return setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
+                    if (now >= minEnd && loadedEnough() && now - Math.max(bottomSince, heightSince) >= timing.stableMs) return finish(true);
+                    return setTimeout(step, timing.pollMs);
                 }
                 bottomSince = 0;
                 if (steps >= FULL_PAGE_MAX_STEPS) return finish(false);
                 steps++;
                 jumpedFrom = top;
                 scrollInstantly(scroller, Math.max(100, Math.round(scroller.clientHeight * 0.85)));
-                setTimeout(step, FULL_PAGE_STEP_PAUSE_MS);
+                setTimeout(step, timing.stepPauseMs);
             };
             var start = function() {
                 window.removeEventListener("load", start);
@@ -2584,7 +2610,7 @@
                 step();
             };
             var loadTimer = 0;
-            if (document.readyState === "complete") return start();
+            if (document.readyState === "complete" || !timing.waitForLoad) return start();
             window.addEventListener("load", start);
             loadTimer = setTimeout(start, Math.max(0, loadEnd - Date.now()));
         });
@@ -2727,34 +2753,52 @@
                         var limitMs = Number(message.limitMs);
                         var minMs = Math.max(0, Number(message.notBeforeMs) || 0);
                         var scroll = null;
-                        var late = [];
+                        // Safe mode: latest non-empty value of each field seen by any read of the page (every
+                        // check of the scroll and of the wait), kept in case the page removes it again
+                        // (content unloaded once scrolled past, lists that only keep the rows in view)
+                        var safe = message.mode !== "fast";
+                        var seen = fields.map(function() { return ""; });
+                        var remember = safe ? function(values) {
+                            values.forEach(function(value, i) { if (value) seen[i] = value; });
+                        } : null;
                         // Time left before the Max limit of the run (negative limit: not given)
                         var timeLeft = function() { return limitMs >= 0 ? Math.max(0, limitMs - (Date.now() - started)) : 30000; };
-                        var read = function(minWait) {
-                            return waitForRunFields(fields, Object.assign({}, message, {
+                        var read = function(minWait, noLateWait) {
+                            return waitForRunFields(fields, Object.assign({}, message, noLateWait ? { lateMs: 0 } : {}, {
+                                onValues: remember,
                                 notBeforeMs: minWait,
                                 limitMs: scroll && scroll.cancelled ? 0 : (limitMs >= 0 ? timeLeft() : limitMs)
-                            })).then(function(result) {
-                                late = result.late.map(function(flag, i) { return flag || !!late[i]; });
-                                return result;
-                            });
+                            }));
                         };
                         // "Load full page": scroll through the page first, within the page's time limit and
                         // not ending before the Min wait. The time spent scrolling counts in both.
-                        var scrolled = message.fullPage ? scrollThroughPage(timeLeft(), minMs) : Promise.resolve(null);
+                        var scrolled = message.fullPage ? scrollThroughPage(timeLeft(), minMs, message.mode,
+                            safe ? function() { remember(extractPageDetails(fields)); } : null) : Promise.resolve(null);
                         scrolled.then(function(result) {
                             scroll = result;
-                            return read(Math.max(0, minMs - (Date.now() - started)));
+                            // The scroll reached the end after the Min wait and the page load, and the page
+                            // had stopped growing: a field still missing is absent, not waited for again
+                            return read(Math.max(0, minMs - (Date.now() - started)), !!(scroll && scroll.bottom && !scroll.cancelled));
                         }).then(function(result) {
-                            // Fields still missing: content drawn after the scroll may need one more pass
-                            if (result.complete || !scroll || scroll.cancelled || timeLeft() < FULL_PAGE_RETRY_MIN_MS) return result;
-                            return scrollThroughPage(timeLeft(), 0).then(function(again) {
-                                scroll = { bottom: again.bottom, steps: scroll.steps + again.steps, cancelled: again.cancelled, retried: true };
-                                return read(0);
-                            });
-                        }).then(function(result) {
-                            sendResponse({ ok: true, status: status, url: window.location.href, values: result.values,
-                                complete: result.complete, late: late, waitedMs: Date.now() - started, scroll: scroll });
+                            var values = result.values;
+                            var complete = result.complete;
+                            var flash = values.map(function() { return false; });
+                            if (safe) {
+                                // Safe: one more read right before leaving the page. A non-empty value of this
+                                // read or of the final one wins; else the latest value seen earlier is kept
+                                // (an empty read never erases it). flash: the value did not come from the final read.
+                                var latest = extractPageDetails(fields);
+                                values = values.map(function(value, i) {
+                                    var kept = latest[i] || value || seen[i];
+                                    flash[i] = !value && !!kept;
+                                    return kept;
+                                });
+                                complete = values.every(function(value, i) {
+                                    return (Array.isArray(message.awaited) && message.awaited[i] === false) || !!value;
+                                });
+                            }
+                            sendResponse({ ok: true, status: status, url: window.location.href, values: values,
+                                complete: complete, late: result.late, flash: flash, waitedMs: Date.now() - started, scroll: scroll });
                         }).catch(function(e) {
                             sendResponse({ error: String(e && e.message || e) });
                         });
